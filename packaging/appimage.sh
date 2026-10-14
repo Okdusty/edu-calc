@@ -37,5 +37,9 @@ export LDAI_OUTPUT="build/qcalcp-$VERSION-x86_64.AppImage"
 linuxdeploy --appdir "$APPDIR" \
     --desktop-file packaging/qcalcp.desktop --icon-file packaging/qcalcp.svg \
     --deploy-deps-only "$APPDIR/usr/lib/$PY/lib-dynload" \
-    --plugin gtk --output appimage
+    --plugin gtk
+# GTK's GStreamer media module would load the host's GStreamer against the bundled GLib (and fail
+# loudly); qcalcp plays no media
+rm -rf "$APPDIR"/usr/lib/gtk-4.0/*/media
+linuxdeploy --appdir "$APPDIR" --output appimage
 ls -l "$LDAI_OUTPUT"

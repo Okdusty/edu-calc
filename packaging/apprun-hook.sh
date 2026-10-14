@@ -5,3 +5,5 @@ if [ -n "${WAYLAND_DISPLAY:-}" ]; then
     unset GDK_BACKEND
 fi
 unset GTK_THEME
+# a host's dconf module isn't in the bundle; GIO falls back quietly without the hint
+unset GSETTINGS_BACKEND
