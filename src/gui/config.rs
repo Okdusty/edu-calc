@@ -8,13 +8,18 @@ use crate::plot::{Rgb, Theme};
 
 pub const DEFAULT_INI: &str = "\
 # qcalcp GUI settings. Delete a key to get its default back.
-# [ui], [layout], [window], [calc] auto_visual and [theme] dark are rewritten on exit; comments survive.
+# [ui], [layout], [window], [calc] (but keypad_side) and [theme] dark are rewritten on exit;
+# comments survive.
 
 [ui]
 # calc: calculator (math entry, live result, answer history) | octave: editor, console, workspace
 mode=calc
-# on-screen keypad in calculator mode / in Octave mode (its layout: keypad.ini)
-keypad=true
+# on-screen keypad (keypad menu in the header, F9 shows/hides; its keys: keypad.ini):
+# general | programming | algebra | custom | numpad (number pad only) | none
+keypad_mode=general
+# number pad beside the mode's keys
+number_pad=true
+# keypad in Octave mode too
 keypad_octave=false
 
 [calc]
@@ -22,6 +27,21 @@ keypad_octave=false
 auto_visual=true
 # keypad under the entry (bottom), beside it (right), or beside it when the view is wide (auto)
 keypad_side=auto
+# Calculator options (options menu in the header; `set angle deg` in the entry works too)
+# angle: rad | deg | gra    approx: exact | try (exact when possible) | approx
+angle=rad
+approx=try
+# significant digits of approximate results
+precision=10
+# fraction: auto | decimal | fraction | mixed    notation: auto | normal | sci | eng
+fraction=auto
+notation=auto
+# result base and input base: 2, 8, 10, 16 (any of 2-36)
+base=10
+input_base=10
+# negative bin/hex numbers as two's complement; bits: 0 (automatic) | 8 | 16 | 32 | 64
+twos_complement=true
+bits=0
 
 [layout]
 # horizontal: work side | plot side;  vertical: work side above the plot
@@ -67,7 +87,11 @@ pin_radius=24
 run=<Control>Return;F5
 # calculator <-> Octave mode
 mode=F2
+# show/hide the keypad (calculator: none <-> last mode); number pad beside it
 keypad=F9
+number_pad=
+# data editor (spreadsheet; CSV/TSV/ODS/XLSX import)
+data=<Control>d
 # Octave selection or current line -> calculator entry, in math view
 to_calc=<Control>m
 auto_visual=
@@ -94,9 +118,11 @@ pub const STYLE_CSS: &str = "\
 /* qcalcp user CSS, reloaded on save. Reference: https://docs.gtk.org/gtk4/css-properties.html
  * Names: window.qcalcp  headerbar  .editor  .console  .repl  .workspace  .plot-bar
  *        .figure-selector  .plot  paned > separator
- *   calculator: .calc  .calc-entry  .calc-preview  .calc-card  .calc-input  .calc-result
- *        .calc-approx  .calc-message  .calc-chip
- *   keypad (keypad.ini): .keypad  .keypad button  .keypad .op  .keypad .fn  .keypad .basic (page)
+ *   calculator: .calc  .calc-entry  .calc-preview  .calc-bases (programming readout)  .calc-card
+ *        .calc-input  .calc-result  .calc-approx  .calc-message  .calc-chip
+ *   completion popup: popover.completion  .completion row  .completion .desc
+ *   keypad (keypad.ini): .keypad  .keypad button  .keypad .op  .keypad .fn
+ *        .keypad .general / .programming / .number-pad ... (group name)
  * Examples:
  *   .editor { font-size: 13pt; }
  *   .keypad button { min-height: 56px; }   .keypad .op { color: #4da6ff; }
@@ -109,8 +135,11 @@ pub const STYLE_CSS: &str = "\
 pub struct Config {
     /// [ui] mode=calc
     pub calc_mode: bool,
-    /// keypad shown in calculator / Octave mode
-    pub keypad: bool,
+    /// calculator keypad: keypad::MODES name or "none"; the last shown mode (F9 brings it back)
+    pub keypad_mode: &'static str,
+    pub keypad_last: &'static str,
+    pub number_pad: bool,
+    /// keypad shown in Octave mode
     pub keypad_octave: bool,
     pub auto_visual: bool,
     /// "auto" | "bottom" | "right"
@@ -172,6 +201,10 @@ impl Config {
         let palette = ini.get("theme", "palette", |s| {
             s.split(';').filter(|c| !c.trim().is_empty()).map(color).collect::<Option<Vec<_>>>().filter(|p| !p.is_empty())
         });
+        // the previous version's [ui] keypad=false hid the keypad
+        let hidden = ini.user.string("ui", "keypad_mode").is_err() && ini.user.boolean("ui", "keypad").is_ok_and(|on| !on);
+        let mode = |s: &str| super::keypad::MODES.iter().map(|m| m.0).chain(["none"]).find(|m| *m == s);
+        let keypad_mode = if hidden { "none" } else { ini.get("ui", "keypad_mode", mode).unwrap_or("general") };
         let mut themes = [Theme::light(), Theme::dark()];
         for t in &mut themes {
             t.bg = bg.unwrap_or(t.bg);
@@ -187,7 +220,9 @@ impl Config {
                 "octave" => Some(false),
                 _ => None,
             }).unwrap_or(true),
-            keypad: ini.get("ui", "keypad", boolean).unwrap_or(true),
+            keypad_mode,
+            keypad_last: if keypad_mode == "none" { "general" } else { keypad_mode },
+            number_pad: ini.get("ui", "number_pad", boolean).unwrap_or(true),
             keypad_octave: ini.get("ui", "keypad_octave", boolean).unwrap_or_default(),
             auto_visual: ini.get("calc", "auto_visual", boolean).unwrap_or(true),
             keypad_side: ini.get("calc", "keypad_side", |s| ["auto", "bottom", "right"].into_iter().find(|v| *v == s)).unwrap_or("auto"),
@@ -228,7 +263,9 @@ impl Config {
         // a file we can't parse is the user's; never clobber it
         kf.load_from_data(&text, glib::KeyFileFlags::KEEP_COMMENTS).map_err(|e| format!("{e}; not saving layout"))?;
         kf.set_string("ui", "mode", if self.calc_mode { "calc" } else { "octave" });
-        kf.set_boolean("ui", "keypad", self.keypad);
+        kf.set_string("ui", "keypad_mode", self.keypad_mode);
+        kf.set_boolean("ui", "number_pad", self.number_pad);
+        let _ = kf.remove_key("ui", "keypad"); // the previous version's
         kf.set_boolean("ui", "keypad_octave", self.keypad_octave);
         kf.set_boolean("calc", "auto_visual", self.auto_visual);
         kf.set_string("layout", "orientation", if self.vertical { "vertical" } else { "horizontal" });
@@ -248,6 +285,9 @@ impl Config {
         kf.save_to_file(path).map_err(|e| e.to_string())
     }
 }
+
+/// Previous versions' default bindings that a current default has taken over.
+const OLD_KEYS: &[(&str, &str)] = &[("toggle_workspace", "F9")];
 
 fn write_defaults(path: &Path) -> std::io::Result<()> {
     if let Some(d) = path.parent() {
@@ -278,7 +318,8 @@ impl Ini {
         self.def.string(group, key).ok().and_then(|v| parse(v.trim()))
     }
 
-    /// Default bindings, overridden per key, plus any extra keys the user added.
+    /// Default bindings, overridden per key, plus any extra keys the user added. A user value that
+    /// is just a previous version's default (OLD_KEYS) now taken by another action counts as unset.
     fn keys(&self) -> Vec<(String, Vec<String>)> {
         let names = |kf: &glib::KeyFile| kf.keys("keys").map(|k| k.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap_or_default();
         let mut all = names(&self.def);
@@ -287,10 +328,12 @@ impl Ini {
                 all.push(k);
             }
         }
-        let list = |kf: &glib::KeyFile, k: &str| kf.string_list("keys", k).ok().map(|l| l.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect());
+        let list = |kf: &glib::KeyFile, k: &str| kf.string_list("keys", k).ok().map(|l| l.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect::<Vec<_>>());
+        let taken = |k: &str, a: &str| names(&self.def).iter().any(|o| o != k && list(&self.def, o).is_some_and(|l| l.iter().any(|d| d == a)));
+        let stale = |k: &str, l: &Vec<String>| matches!(&l[..], [a] if OLD_KEYS.contains(&(k, a.as_str())) && taken(k, a));
         all.into_iter()
             .map(|k| {
-                let v = list(&self.user, &k).or_else(|| list(&self.def, &k)).unwrap_or_default();
+                let v = list(&self.user, &k).filter(|l| !stale(&k, l)).or_else(|| list(&self.def, &k)).unwrap_or_default();
                 (k, v)
             })
             .collect()
@@ -330,7 +373,9 @@ mod tests {
         assert!(!d.vertical && !d.plot_left && d.dark && d.show_console);
         assert_eq!((d.split, d.width, d.zoom_step), (700, 1280, 1.15));
         assert!(d.hover_cursor && d.pin_radius == 24.0);
-        assert!(d.calc_mode && d.keypad && !d.keypad_octave && d.auto_visual && d.keypad_side == "auto");
+        assert!(d.calc_mode && !d.keypad_octave && d.auto_visual && d.keypad_side == "auto");
+        assert_eq!((d.keypad_mode, d.keypad_last, d.number_pad), ("general", "general", true));
+        assert!(d.keys.contains(&("data".into(), vec!["<Control>d".into()])));
         assert!(d.keys.contains(&("keypad".into(), vec!["F9".into()])));
         assert!(d.keys.contains(&("trace".into(), vec!["<Control>t".into()])));
         assert_eq!(d.themes[1].bg, Theme::dark().bg);
@@ -354,5 +399,21 @@ mod tests {
 
         let (_, w) = Config::parse("not an ini");
         assert!(!w.is_empty());
+    }
+
+    #[test]
+    fn previous_version() {
+        // keypad=false hid the keypad; keypad_mode wins once saved
+        let (c, w) = Config::parse("[ui]\nkeypad=false\n[keys]\ntoggle_workspace=F9\n");
+        assert_eq!((c.keypad_mode, c.keypad_last, w.as_str()), ("none", "general", ""));
+        // its toggle_workspace=F9 default gives way to keypad=F9
+        let key = |c: &Config, k: &str| c.keys.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).unwrap();
+        assert_eq!(key(&c, "toggle_workspace"), ["<Shift>F9"]);
+        assert_eq!(key(&c, "keypad"), ["F9"]);
+        let (c, _) = Config::parse("[ui]\nkeypad=false\nkeypad_mode=programming\n[keys]\ntoggle_workspace=F8\nkeypad=F10\n");
+        assert_eq!((c.keypad_mode, c.keypad_last), ("programming", "programming"));
+        assert_eq!(key(&c, "toggle_workspace"), ["F8"]); // a real rebind stays (the GUI warns about the clash)
+        let (c, w) = Config::parse("[ui]\nkeypad_mode=sideways\n");
+        assert!(c.keypad_mode == "general" && w.contains("keypad_mode"));
     }
 }

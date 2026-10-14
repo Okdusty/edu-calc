@@ -40,6 +40,10 @@ pub struct Interp {
     err_line: Option<usize>,
     /// names with no `name.m` in the current directory (cleared on each `eval`)
     no_mfile: HashSet<String>,
+    /// a top-level statement is running (nested evals don't log it again)
+    logging: bool,
+    /// plots version left by the last change that isn't logged (figure switch, clf, close)
+    unlogged: u64,
 }
 
 impl Interp {
@@ -54,6 +58,8 @@ impl Interp {
             end_ctx: vec![],
             err_line: None,
             no_mfile: HashSet::new(),
+            logging: false,
+            unlogged: 0,
         }
     }
     /// Run Octave source (script or REPL line). Printed text accumulates; read it with
@@ -65,6 +71,15 @@ impl Interp {
             Some(l) if !e.contains("near line") => format!("{e} near line {l}"),
             _ => e,
         })
+    }
+    /// Keep the plot change just made out of the figure's Octave log (`Figure::code`) unless the
+    /// statement changes plots again: switching figures, clf, close.
+    pub(crate) fn skip_log(&mut self) {
+        self.unlogged = self.plots.version;
+    }
+    /// Names of functions defined in scripts or loaded from `name.m` (for completion).
+    pub fn func_names(&self) -> Vec<String> {
+        self.funcs.keys().cloned().collect()
     }
     pub fn take_output(&mut self) -> String {
         std::mem::take(&mut self.out)

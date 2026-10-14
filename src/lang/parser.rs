@@ -57,6 +57,8 @@ pub struct LValue {
 pub struct Stmt {
     pub kind: Kind,
     pub line: usize,
+    /// byte range of its source, terminator excluded
+    pub span: (usize, usize),
 }
 
 /// The bool on Expr/Assign: display the result (no trailing `;`).
@@ -231,9 +233,11 @@ impl P<'_> {
                 }
                 return Err(self.err(&format!("'{}' missing", terms[terms.len() - 1])));
             }
-            let line = self.line();
+            let (line, start) = (self.line(), self.t[self.i].pos);
             let kind = self.stmt()?;
-            out.push(Stmt { kind, line });
+            let last = self.t[..self.i].iter().rev().find(|t| !matches!(t.tok, Tok::Newline | Tok::Op(";" | ",")));
+            let span = (start, last.map_or(start, |t| t.end).max(start));
+            out.push(Stmt { kind, line, span });
         }
     }
 

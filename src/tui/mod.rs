@@ -16,14 +16,15 @@ use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Widget};
+use ratatui::widgets::{Block, Clear, Paragraph, Widget};
 use ratatui::{DefaultTerminal, Frame};
 
+use crate::complete::{self, Completion};
 use crate::lang::Interp;
 use crate::plot::cursor::{self, Hit, Mode};
 use crate::plot::render::Frame as PlotFrame;
 use crate::plot::{Axes, Theme, View};
-use crate::qalc::Answer;
+use crate::qalc::{self, Answer};
 
 use calc::{Lang, Preview};
 
@@ -32,8 +33,13 @@ const HELP_CALC: &str = " F5 Octave  ^O to Octave  F6 auto-plot ";
 const HELP_OCTAVE: &str = " F5 calculator  ^K to math ";
 const HELP_REPL: &str = " Tab plot  F2 vars  F3 layout  F4 theme  Alt+arrows split  ^Q quit  ^L clear  ^C cancel  \
                          PgUp/PgDn scroll  ↑↓ history";
-const HELP_PLOT: &str = " arrows pan/rotate  +/- zoom  t trace  p/Enter pin  P unpin all  r reset  [ ] figure  \
-                         mouse hover/drag/scroll  Tab REPL  F4 theme  ^Q quit";
+const HELP_PLOT: &str = " arrows pan/rotate  +/- zoom  k key points  o code  t trace  p/Enter pin  P unpin all  r reset  \
+                         [ ] figure  mouse hover/drag/scroll  Tab REPL  F4 theme  ^Q quit";
+const HELP_MENU: &str = " Tab/Enter complete  ↑↓ choose  Esc close";
+/// completion popup rows
+const MENU: usize = 6;
+/// marks the Octave-mode view echo in the log
+const VIEW: &str = "% view: ";
 /// mouse reach for the data cursor, pane pixels (1 cell = 1x2)
 const REACH: f64 = 4.0;
 
@@ -108,13 +114,28 @@ struct App {
     plot_rect: Rect,
     /// mouse drag: last cell, axes index and its size in pane pixels
     drag: Option<(u16, u16, (usize, f64, f64))>,
+    /// completion popup over the input line, and where it was drawn (mouse hit-testing)
+    menu: Option<Menu>,
+    menu_rect: Rect,
     quit: bool,
+}
+
+/// Completions of the identifier before the cursor: where it starts (char offset), the matches,
+/// the selected one.
+struct Menu {
+    start: usize,
+    items: Vec<Completion>,
+    sel: usize,
 }
 
 impl App {
     fn new() -> Self {
         let (interp, msg) = crate::new_interp();
-        App::with(interp, &msg)
+        let mut app = App::with(interp, &msg);
+        let (o, warn) = qalc::Options::load_ini(&crate::ini_path());
+        qalc::set_options(&o);
+        warn.lines().for_each(|l| app.push(Kind::Warn, l));
+        app
     }
 
     fn with(interp: Interp, msg: &str) -> Self {
@@ -144,6 +165,8 @@ impl App {
             trace: false,
             plot_rect: Rect::default(),
             drag: None,
+            menu: None,
+            menu_rect: Rect::default(),
             quit: false,
         };
         for l in msg.lines() {
@@ -218,20 +241,90 @@ impl App {
         }
     }
 
-    fn prompt(&self) -> &'static str {
+    /// Calculator: non-default base/angle in front ("hex deg = ").
+    fn prompt(&self) -> String {
         match self.lang {
-            Lang::Calc => "= ",
-            Lang::Octave if self.pending.is_empty() => ">> ",
-            Lang::Octave => ".. ",
+            Lang::Calc => format!("{}= ", calc::opts_tag(&qalc::options())),
+            Lang::Octave if self.pending.is_empty() => ">> ".into(),
+            Lang::Octave => ".. ".into(),
         }
     }
 
     fn help(&self) -> String {
-        match (self.plot_focus, self.lang) {
-            (true, _) => HELP_PLOT.into(),
-            (_, Lang::Calc) => format!("{HELP_CALC}{HELP_REPL}"),
-            (_, Lang::Octave) => format!("{HELP_OCTAVE}{HELP_REPL}"),
+        if self.plot_focus {
+            return HELP_PLOT.into();
         }
+        if self.menu.is_some() {
+            return HELP_MENU.into();
+        }
+        if let Some(h) = self.call_hint() {
+            return h;
+        }
+        match self.lang {
+            Lang::Calc => format!("{HELP_CALC}{HELP_REPL}"),
+            Lang::Octave => format!("{HELP_OCTAVE}{HELP_REPL}"),
+        }
+    }
+
+    /// " integrate(f, a, b, x = x)  Integrate " while the cursor is inside a call of a documented function.
+    fn call_hint(&self) -> Option<String> {
+        let name = call_at(&self.input, self.cursor)?;
+        let (sig, desc) = match self.lang {
+            Lang::Calc => {
+                let c = qalc::catalog().iter().find(|c| c.kind == qalc::ItemKind::Function && c.name == name)?;
+                (c.signature.as_str(), c.desc.as_str())
+            }
+            Lang::Octave => crate::doc::doc(&name).map(|d| (d.1, d.2))?,
+        };
+        Some(format!(" {sig}  {desc} "))
+    }
+
+    /// Open (or refresh) the completion popup for the identifier before the cursor.
+    fn complete(&mut self) {
+        let text: String = self.input.iter().collect();
+        let lang = match self.lang {
+            Lang::Calc => complete::Lang::Math,
+            Lang::Octave => complete::Lang::Octave,
+        };
+        let mut vars: Vec<(String, String)> = self.interp.vars.iter().map(|(k, v)| (k.clone(), v.summary())).collect();
+        vars.extend(self.interp.func_names().into_iter().map(|f| (f, "function".to_string())));
+        let found = guarded(|| Ok(complete::complete(&text, self.cursor, lang, &vars, MENU))).ok().flatten();
+        self.menu = found.filter(|(start, items)| *start <= self.cursor && !items.is_empty()).map(|(start, items)| Menu { start, items, sel: 0 });
+    }
+
+    /// Popup keys; true when the key was used. Enter on a match that's already typed out falls
+    /// through and submits.
+    fn menu_key(&mut self, code: KeyCode) -> bool {
+        let Some(m) = &mut self.menu else { return false };
+        let n = m.items.len();
+        match code {
+            KeyCode::Up => m.sel = (m.sel + n - 1) % n,
+            KeyCode::Down => m.sel = (m.sel + 1) % n,
+            KeyCode::Tab => {
+                let i = m.sel;
+                self.accept(i);
+            }
+            KeyCode::Enter => {
+                let i = m.sel;
+                return self.accept(i);
+            }
+            KeyCode::Esc => self.menu = None,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Replace the typed prefix with popup item `i`; false when that changes nothing.
+    fn accept(&mut self, i: usize) -> bool {
+        let Some(m) = self.menu.take() else { return false };
+        let Some(c) = m.items.get(i) else { return false };
+        let (text, at) = insertion(&c.insert, &c.name, self.input.get(self.cursor) == Some(&'('));
+        if self.input[m.start..self.cursor].iter().copied().eq(text.chars()) {
+            return false;
+        }
+        self.input.splice(m.start..self.cursor, text.chars());
+        self.cursor = m.start + at;
+        true
     }
 
     fn set_input(&mut self, s: &str) {
@@ -242,6 +335,7 @@ impl App {
     fn on_paste(&mut self, s: &str) {
         let s = s.replace("\r\n", "\n").replace('\r', "\n");
         let s = s.trim_end_matches('\n');
+        self.menu = None;
         self.input.splice(self.cursor..self.cursor, s.chars());
         self.cursor += s.chars().count();
         if s.contains('\n') {
@@ -253,6 +347,10 @@ impl App {
     fn on_key(&mut self, k: KeyEvent) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let alt = k.modifiers.contains(KeyModifiers::ALT);
+        if !self.plot_focus && !ctrl && !alt && self.menu_key(k.code) {
+            return;
+        }
+        let menu = self.menu.take().is_some();
         match k.code {
             KeyCode::Char('d' | 'q') if ctrl => self.quit = true,
             KeyCode::Char('l') if ctrl => {
@@ -272,6 +370,11 @@ impl App {
             KeyCode::Right | KeyCode::Up if alt => self.split = self.split.saturating_sub(5).max(10),
             _ if self.plot_focus => self.plot_key(k.code),
             _ => self.edit_key(k.code, ctrl),
+        }
+        // typing opens the popup and keeps filtering it; Backspace only narrows an open one
+        let typed = matches!(k.code, KeyCode::Char(_)) && !ctrl || menu && k.code == KeyCode::Backspace;
+        if typed && !self.plot_focus {
+            self.complete();
         }
     }
 
@@ -374,12 +477,14 @@ impl App {
                 }
                 p.touch();
             }
-            KeyCode::Left => self.with_axes(ai, |a| nudge(a, -0.1, 0.0)),
-            KeyCode::Right => self.with_axes(ai, |a| nudge(a, 0.1, 0.0)),
-            KeyCode::Up => self.with_axes(ai, |a| nudge(a, 0.0, 0.1)),
-            KeyCode::Down => self.with_axes(ai, |a| nudge(a, 0.0, -0.1)),
-            KeyCode::Char('+' | '=') => self.with_axes(ai, |a| zoom(a, 0.8)),
-            KeyCode::Char('-' | '_') => self.with_axes(ai, |a| zoom(a, 1.25)),
+            KeyCode::Left => self.move_view(ai, |a| nudge(a, -0.1, 0.0)),
+            KeyCode::Right => self.move_view(ai, |a| nudge(a, 0.1, 0.0)),
+            KeyCode::Up => self.move_view(ai, |a| nudge(a, 0.0, 0.1)),
+            KeyCode::Down => self.move_view(ai, |a| nudge(a, 0.0, -0.1)),
+            KeyCode::Char('+' | '=') => self.move_view(ai, |a| zoom(a, 0.8)),
+            KeyCode::Char('-' | '_') => self.move_view(ai, |a| zoom(a, 1.25)),
+            KeyCode::Char('k') => self.with_axes(ai, |a| a.keypoints = !a.keypoints),
+            KeyCode::Char('o') => self.figure_code(),
             KeyCode::Char('r') => {
                 let p = &mut self.interp.plots;
                 for a in &mut p.figures[p.current].axes {
@@ -422,6 +527,45 @@ impl App {
         }
     }
 
+    /// Pan/zoom axes `ai` with `f`, then let function curves follow the new view (2D) and, in Octave
+    /// mode, echo the view as code: one log line, replaced while it's still the last.
+    fn move_view(&mut self, ai: usize, f: impl FnOnce(&mut Axes)) {
+        self.with_axes(ai, f);
+        let p = &self.interp.plots;
+        if p.figures.get(p.current).and_then(|fig| fig.axes.get(ai)).is_none_or(|a| a.is_3d()) {
+            return;
+        }
+        if guarded(|| Ok(crate::plot::resample(&mut self.interp))) == Ok(true) {
+            self.interp.plots.touch();
+        }
+        if self.lang != Lang::Octave {
+            return;
+        }
+        let p = &self.interp.plots;
+        let [(x0, x1), (y0, y1), _] = p.figures[p.current].axes[ai].bounds();
+        let v = |x| crate::sig(x, 4);
+        let line = format!("{VIEW}xlim([{} {}]); ylim([{} {}]);", v(x0), v(x1), v(y0), v(y1));
+        if self.log.last().is_some_and(|(k, s)| *k == Kind::Dim && s.starts_with(VIEW)) {
+            self.log.pop();
+        }
+        self.push(Kind::Dim, &line);
+    }
+
+    /// `o`: the current figure as Octave code into the log; in Octave mode also into the history (↑).
+    fn figure_code(&mut self) {
+        let p = &self.interp.plots;
+        let code = p.figures.get(p.current).map(|f| f.octave()).unwrap_or_default();
+        if code.trim().is_empty() {
+            return self.push(Kind::Warn, "(no recorded code for this figure)");
+        }
+        code.lines().for_each(|l| self.push(Kind::Out, l));
+        let entry = (Lang::Octave, code);
+        if self.lang == Lang::Octave && self.history.last() != Some(&entry) {
+            self.history.push(entry);
+            self.hist = self.history.len();
+        }
+    }
+
     /// Apply `f` to axes `ai` of the current figure and mark the plots dirty.
     fn with_axes(&mut self, ai: usize, f: impl FnOnce(&mut Axes)) {
         let p = &mut self.interp.plots;
@@ -449,7 +593,11 @@ impl App {
         let (col, row) = (m.column, m.row);
         let in_plot = self.plot_rect.contains(Position::new(col, row));
         match m.kind {
+            MouseEventKind::Down(MouseButton::Left) if self.menu_rect.contains(Position::new(col, row)) => {
+                self.accept((row - self.menu_rect.y) as usize);
+            }
             MouseEventKind::Down(MouseButton::Left) => {
+                self.menu = None;
                 self.plot_focus = in_plot;
                 self.drag = self.hit(col, row).map(|h| (col, row, h));
             }
@@ -459,7 +607,8 @@ impl App {
                     // grab semantics: the content follows the pointer
                     let dx = -(col as f64 - c0 as f64) / cw;
                     let dy = (row as f64 - r0 as f64) * 2.0 / ch;
-                    self.with_axes(ai, |a| nudge(a, dx, dy));
+                    // ponytail: resamples on every drag event; only on release if big plots stutter
+                    self.move_view(ai, |a| nudge(a, dx, dy));
                     self.drag = Some((col, row, (ai, cw, ch)));
                 }
             }
@@ -469,7 +618,7 @@ impl App {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if in_plot => {
                 if let Some((ai, ..)) = self.hit(col, row) {
                     let k = if m.kind == MouseEventKind::ScrollUp { 0.9 } else { 1.0 / 0.9 };
-                    self.with_axes(ai, |a| zoom(a, k));
+                    self.move_view(ai, |a| zoom(a, k));
                 }
             }
             MouseEventKind::ScrollUp => self.scroll += 3,
@@ -552,6 +701,7 @@ impl App {
         };
         let block = Block::bordered().title(title).border_style(border(!self.plot_focus));
         let inner = block.inner(area);
+        self.menu_rect = Rect::default();
         f.render_widget(block, area);
         if inner.is_empty() {
             return;
@@ -588,14 +738,36 @@ impl App {
         let prompt = self.prompt();
         let avail = (input_area.width as usize).saturating_sub(prompt.len()).max(1);
         let start = self.cursor.saturating_sub(avail - 1);
-        let shown: String = self.input[start..].iter().take(avail).collect();
-        f.render_widget(Line::from(vec![Span::raw(prompt).bold(), Span::raw(shown)]), input_area);
+        // multi-line input (a figure's code from the history) shows its line breaks as ⏎
+        let shown: String = self.input[start..].iter().take(avail).map(|&c| if c == '\n' { '⏎' } else { c }).collect();
+        let col = |i: usize| input_area.x + (prompt.len() + i.saturating_sub(start)) as u16;
+        f.render_widget(Line::from(vec![Span::raw(prompt.as_str()).bold(), Span::raw(shown)]), input_area);
         if !self.plot_focus {
-            f.set_cursor_position((input_area.x + (prompt.len() + self.cursor - start) as u16, input_area.y));
+            f.set_cursor_position((col(self.cursor), input_area.y));
         }
         if let Some(p) = &self.preview.text {
             f.render_widget(Line::from(format!("{:w$}{p}", "", w = prompt.len())).dark_gray(), preview_area);
         }
+        // completion popup: right above the input line, starting under the typed prefix
+        let Some(m) = self.menu.as_ref().filter(|_| !self.plot_focus) else { return };
+        let n = m.items.len().min(MENU).min(log_area.height as usize);
+        let rows: Vec<(String, String)> = m.items[..n].iter().map(|c| (format!(" {} ", c.signature), format!(" {} ", c.desc))).collect();
+        let w = rows.iter().map(|(s, d)| s.chars().count() + if d.trim().is_empty() { 0 } else { d.chars().count() }).max().unwrap_or(0) as u16;
+        // it may spill over the panes to the right, like an IDE popup
+        let right = f.area().right();
+        let w = w.min(right - log_area.x);
+        let r = Rect::new(col(m.start).min(right - w), log_area.bottom() - n as u16, w, n as u16);
+        let lines: Vec<Line> = rows
+            .into_iter()
+            .enumerate()
+            .map(|(i, (s, d))| match i == m.sel {
+                true => Line::from(vec![Span::raw(s), Span::raw(d)]).black().on_cyan(),
+                false => Line::from(vec![Span::raw(s).white(), Span::raw(d).gray()]),
+            })
+            .collect();
+        f.render_widget(Clear, r);
+        f.render_widget(Paragraph::new(lines).on_dark_gray(), r);
+        self.menu_rect = r;
     }
 
     fn draw_ws(&self, f: &mut Frame, area: Rect) {
@@ -704,6 +876,35 @@ fn scale((lo, hi): (f64, f64), k: f64) -> (f64, f64) {
 /// New limits unless they collapsed (float precision) or overflowed.
 fn sane(new: (f64, f64), old: (f64, f64)) -> (f64, f64) {
     if new.0 < new.1 && (new.1 - new.0).is_finite() { new } else { old }
+}
+
+/// Accepting a completion: the text for the typed prefix and the cursor offset in it. □ slots
+/// go, the cursor lands on the first (`integrate(□, □, □)` -> `integrate(|)`, the signature
+/// shows in the status line); with a `(` already after the cursor only the name goes in.
+fn insertion(insert: &str, name: &str, paren_follows: bool) -> (String, usize) {
+    if paren_follows {
+        return (name.to_string(), name.chars().count());
+    }
+    match insert.split_once('□') {
+        Some((head, tail)) => (format!("{head}{}", tail.replace("□, ", "").replace(", □", "").replace('□', "")), head.chars().count()),
+        None => (insert.to_string(), insert.chars().count()),
+    }
+}
+
+/// Name of the call whose parentheses hold the cursor: `integrate(x^2, 0|` -> integrate.
+// ponytail: parentheses inside strings count too
+fn call_at(input: &[char], cursor: usize) -> Option<String> {
+    let mut depth = 0;
+    let open = (0..cursor.min(input.len())).rev().find(|&i| {
+        depth += match input[i] {
+            ')' => 1,
+            '(' => -1,
+            _ => 0,
+        };
+        depth < 0
+    })?;
+    let start = input[..open].iter().rposition(|c| !(c.is_alphanumeric() || *c == '_')).map_or(0, |i| i + 1);
+    (start < open).then(|| input[start..open].iter().collect())
 }
 
 /// Open-block count of Octave source: > 0 means an if/for/function/... still lacks its end.
@@ -881,5 +1082,118 @@ mod tests {
         assert_eq!(a.view.zoom, 2.0);
         nudge(&mut a, 0.0, 10.0);
         assert_eq!(a.view.pitch, FRAC_PI_2); // clamped
+    }
+
+    #[test]
+    fn completion_helpers() {
+        assert_eq!(insertion("integrate(□, □, □)", "integrate", false), ("integrate()".into(), 10));
+        assert_eq!(insertion("linspace(□)", "linspace", false), ("linspace()".into(), 9));
+        assert_eq!(insertion("rand()", "rand", false), ("rand()".into(), 6));
+        assert_eq!(insertion("pi", "pi", false), ("pi".into(), 2));
+        assert_eq!(insertion("sin(□)", "sin", true), ("sin".into(), 3)); // `sni|(x)` -> `sin|(x)`
+        let at = |s: &str| call_at(&s.chars().collect::<Vec<_>>(), s.chars().count());
+        assert_eq!(at("integrate(x^2, 0").as_deref(), Some("integrate"));
+        assert_eq!(at("f(g(x), [1, 2").as_deref(), Some("f"));
+        assert_eq!(at("y = a_1(").as_deref(), Some("a_1"));
+        assert_eq!(at("sin(x) + 1"), None);
+        assert_eq!(at("(1 + 2"), None);
+        assert_eq!(call_at(&['f', '('], 9), Some("f".into())); // cursor past the end: no panic
+    }
+
+    #[test]
+    fn completion_popup() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let item = |name: &str, insert: &str, signature: &str, desc: &str| Completion {
+            name: name.into(),
+            insert: insert.into(),
+            signature: signature.into(),
+            desc: desc.into(),
+            kind: complete::Kind::Function,
+        };
+        let items = vec![
+            item("integrate", "integrate(□, □, □)", "integrate(f, a, b, x = x)", "definite or indefinite integral"),
+            item("integer", "integer", "integer", ""),
+        ];
+        let mut app = App::with(Interp::new(), "");
+        let key = |app: &mut App, c: KeyCode| app.on_key(KeyEvent::new(c, KeyModifiers::NONE));
+        let input = |app: &App| app.input.iter().collect::<String>();
+        let open = |app: &mut App, s: &str| {
+            app.set_input(s);
+            app.menu = Some(Menu { start: 0, items: items.clone(), sel: 0 });
+        };
+        // arrows move the selection (wrapping), Tab accepts: □ slots dropped, cursor on the first
+        open(&mut app, "integ");
+        key(&mut app, KeyCode::Up);
+        assert_eq!(app.menu.as_ref().unwrap().sel, 1);
+        key(&mut app, KeyCode::Down);
+        assert_eq!(app.help(), HELP_MENU);
+        key(&mut app, KeyCode::Tab);
+        assert_eq!((input(&app), app.cursor, app.plot_focus), ("integrate()".into(), 10, false));
+        assert!(app.menu.is_none() && app.history.is_empty());
+        // Enter accepts too; on a match that's already typed out it submits
+        open(&mut app, "integ");
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(input(&app), "integer");
+        open(&mut app, "integer");
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!((input(&app), app.history.len()), (String::new(), 1));
+        // Esc only closes it; closed, the keys are theirs again
+        open(&mut app, "integ");
+        key(&mut app, KeyCode::Esc);
+        assert_eq!((input(&app), app.menu.is_none()), ("integ".into(), true));
+        key(&mut app, KeyCode::Up);
+        assert_eq!(input(&app), "integer"); // history
+        key(&mut app, KeyCode::Tab);
+        assert!(app.plot_focus);
+        key(&mut app, KeyCode::Tab);
+        // drawn above the input line, under the prefix; a click accepts a row
+        let mut term = Terminal::new(TestBackend::new(160, 30)).unwrap();
+        open(&mut app, "y = integ");
+        app.menu.as_mut().unwrap().start = 4;
+        let screen = term.draw(|f| app.draw(f)).unwrap().buffer.clone();
+        let r = app.menu_rect;
+        let row = |y: u16| (r.x..r.right()).map(|x| screen[(x, y)].symbol()).collect::<String>();
+        assert_eq!(r.height, 2);
+        assert!(row(r.y).starts_with(" integrate(f, a, b, x = x)  definite or"), "{}", row(r.y));
+        assert!(row(r.y + 1).starts_with(" integer "));
+        app.on_mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: r.x + 2, row: r.y + 1, modifiers: KeyModifiers::NONE });
+        assert_eq!(input(&app), "y = integer");
+    }
+
+    #[test]
+    fn plot_keys() {
+        let mut app = App::with(Interp::new(), "");
+        app.interp.plots.axes().add(Series::new(Data::Line { x: vec![0., 1., 2.], y: vec![0., 1., 4.] }));
+        app.interp.plots.figures[0].code = vec!["plot([0 1 2], [0 1 4]);".into()];
+        app.interp.plots.touch();
+        app.plot_focus = true;
+        let key = |app: &mut App, c: char| app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        key(&mut app, 'k');
+        assert!(app.interp.plots.axes().keypoints);
+        // calculator mode: code into the log only, no view echo
+        key(&mut app, 'o');
+        key(&mut app, '-');
+        // the code, then the view (key points now on)
+        assert!(app.log.iter().rev().take(2).any(|l| l.1.starts_with("plot([0 1 2]")), "{:?}", app.log);
+        assert_eq!(app.log.last().unwrap().1, "keypoints on;");
+        assert!(app.history.is_empty());
+        // Octave mode: code also into the history; pan/zoom echo one view line, replaced in place
+        app.lang = Lang::Octave;
+        key(&mut app, 'o');
+        assert_eq!(app.history.last().map(|h| h.0), Some(Lang::Octave));
+        key(&mut app, '-');
+        key(&mut app, '+');
+        let views = app.log.iter().filter(|(_, s)| s.starts_with(VIEW)).count();
+        assert_eq!(views, 1);
+        let (x0, x1) = app.interp.plots.axes().xlim.unwrap();
+        assert_eq!(app.log.last().unwrap().1, format!("% view: xlim([{} {}]); ylim([{} {}]);", crate::sig(x0, 4), crate::sig(x1, 4), crate::sig(app.interp.plots.axes().ylim.unwrap().0, 4), crate::sig(app.interp.plots.axes().ylim.unwrap().1, 4)));
+        app.push(Kind::Out, "something else");
+        key(&mut app, '-');
+        assert_eq!(app.log.iter().filter(|(_, s)| s.starts_with(VIEW)).count(), 2);
+        key(&mut app, 'k');
+        assert!(!app.interp.plots.axes().keypoints);
     }
 }

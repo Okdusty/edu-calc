@@ -221,6 +221,16 @@ impl Lx<'_> {
 
     fn number(&mut self) -> Result<(), String> {
         let p = self.i;
+        // 0x1F, 0b1011: doubles
+        if self.at(0) == b'0' && matches!(self.at(1) | 0x20, b'x' | b'b') {
+            let radix = if self.at(1) | 0x20 == b'x' { 16 } else { 2 };
+            let digits: Vec<u32> = self.b[p + 2..].iter().map_while(|&c| (c as char).to_digit(radix)).collect();
+            if !digits.is_empty() {
+                self.i += 2 + digits.len();
+                self.push(Tok::Num(digits.iter().fold(0.0, |v, &d| v * radix as f64 + d as f64)), p);
+                return Ok(());
+            }
+        }
         while self.at(0).is_ascii_digit() {
             self.i += 1;
         }

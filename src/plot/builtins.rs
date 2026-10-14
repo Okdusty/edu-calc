@@ -2,7 +2,7 @@
 use std::borrow::Cow;
 use std::path::Path;
 
-use super::{Axes, Data, Figure, LineStyle, Marker, Note, Rgb, Series, Theme, View, calculus, cursor, render};
+use super::{Axes, Data, Figure, LineStyle, Marker, Note, Rgb, Series, Source, Theme, View, analysis, calculus, cursor, render};
 use crate::lang::Interp;
 use crate::value::{Builtin, Func, Matrix, Value};
 
@@ -33,6 +33,7 @@ pub fn lookup(name: &str) -> Option<Builtin> {
         "compass" => compass,
         "feather" => feather,
         "datatip" => datatip,
+        "keypoints" => keypoints,
         "text" => text,
         "area" => area,
         "fill" => fill,
@@ -1108,7 +1109,7 @@ fn quantiles(v: &[f64]) -> Option<(f64, f64)> {
 
 /// Break a sampled curve at jumps (tan, 1/x, floor) so no vertical lines get drawn through
 /// poles: a big step that flips sign or dwarfs both neighbouring steps.
-fn break_jumps(xs: &[f64], ys: &[f64]) -> (Vec<f64>, Vec<f64>) {
+pub(super) fn break_jumps(xs: &[f64], ys: &[f64]) -> (Vec<f64>, Vec<f64>) {
     let Some((lo, hi)) = quantiles(ys) else { return (xs.to_vec(), ys.to_vec()) };
     let d: Vec<f64> = ys.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
     let mut sorted: Vec<f64> = d.iter().copied().filter(|v| v.is_finite()).collect();
@@ -1179,7 +1180,7 @@ fn fplot(it: &mut Interp, args: &[Value], _: usize) -> R {
     };
     let h = func(it, f, false)?;
     let (x, y, ys) = curve(it, "fplot", &h, lo, hi)?;
-    let mut s = Series::new(Data::Line { x, y });
+    let mut s = Series { source: Some(Source::Func(h)), ..Series::new(Data::Line { x, y }) };
     if let Some(fm) = args.iter().skip(1).find_map(|v| v.as_str().ok().and_then(parse_fmt)) {
         fm.apply(&mut s);
     }
@@ -1309,6 +1310,44 @@ fn datatip(it: &mut Interp, args: &[Value], _: usize) -> R {
     touch(it)
 }
 
+/// keypoints [on | off]: mark the key points of the current axes' lines (no argument toggles).
+/// p = keypoints() | keypoints(x, y): struct of them for the axes' first line, or the data: max,
+/// min, roots, inflection (N x 2 [x y]), vertex ([] or [h k]), yintercept ([] or f(0)), symmetry
+/// ('even', 'odd', 'x = 2', 'point (0, 1)' or 'none').
+fn keypoints(it: &mut Interp, args: &[Value], nargout: usize) -> R {
+    let k = match args {
+        [x, y] if is_num(x) && is_num(y) => {
+            let (x, y) = (x.matrix()?.data, y.matrix()?.data);
+            if x.len() != y.len() {
+                return Err("keypoints: x and y must have the same length".into());
+            }
+            analysis::analyze(&x, &y).ok_or("keypoints: needs at least 5 finite points in increasing x")?
+        }
+        [] if nargout > 0 => {
+            let p = &it.plots;
+            let a = p.figures.get(p.current).and_then(|f| f.axes.get(f.current));
+            let lines = a.into_iter().flat_map(|a| &a.series).filter_map(|s| if let Data::Line { x, y } = &s.data { Some((x, y)) } else { None });
+            lines.filter_map(|(x, y)| analysis::analyze(x, y)).next().ok_or("keypoints: no line to analyze in the current axes")?
+        }
+        _ => {
+            let a = it.plots.axes();
+            a.keypoints = switch("keypoints", args, a.keypoints, &[])?;
+            return touch(it);
+        }
+    };
+    let pts = |v: &[[f64; 2]]| Value::Num(Matrix::new(v.len(), 2, v.iter().map(|p| p[0]).chain(v.iter().map(|p| p[1])).collect()));
+    let fields = [
+        ("max", pts(&k.max)),
+        ("min", pts(&k.min)),
+        ("roots", pts(&k.roots)),
+        ("inflection", pts(&k.inflection)),
+        ("vertex", k.vertex.map_or_else(Value::empty, |v| Value::from(v.to_vec()))),
+        ("yintercept", k.y_int.map_or_else(Value::empty, |p| Value::num(p[1]))),
+        ("symmetry", Value::Str(k.symmetry.text())),
+    ];
+    Ok(vec![Value::Struct(fields.into_iter().map(|(n, v)| (n.to_string(), v)).collect())])
+}
+
 /// text(x, y[, z], str[, 'HorizontalAlignment', h]): notes at data coords. Vector positions take
 /// one string each from a cell or share one string; a cell for one position is multi-line.
 // ponytail: other properties (FontSize, Color, Rotation, ...) are accepted and ignored
@@ -1424,9 +1463,12 @@ fn axis(it: &mut Interp, args: &[Value], nargout: usize) -> R {
     }
     let b = a.bounds();
     let three = a.is_3d();
-    it.plots.touch();
-    if nargout == 0 && !args.is_empty() {
-        return Ok(vec![]);
+    if !args.is_empty() {
+        it.plots.touch();
+        super::resample(it);
+        if nargout == 0 {
+            return Ok(vec![]);
+        }
     }
     let mut v = vec![b[0].0, b[0].1, b[1].0, b[1].1];
     if three {
@@ -1460,6 +1502,9 @@ fn lim(it: &mut Interp, args: &[Value], nargout: usize, k: usize) -> R {
     }
     let b = a.bounds()[k];
     it.plots.touch();
+    if k == 0 {
+        super::resample(it); // the curve follows a wider view
+    }
     Ok(if nargout > 0 { vec![Value::from(vec![b.0, b.1])] } else { vec![] })
 }
 fn xlim(it: &mut Interp, args: &[Value], n: usize) -> R {
@@ -1487,7 +1532,9 @@ fn view(it: &mut Interp, args: &[Value], nargout: usize) -> R {
         _ => return Err("view: expected (az, el), [az el], 2 or 3".into()),
     }
     let v = a.view;
-    it.plots.touch();
+    if !nums.is_empty() {
+        it.plots.touch();
+    }
     Ok(if nargout > 0 || args.is_empty() { vec![Value::from(vec![v.yaw.to_degrees(), v.pitch.to_degrees()])] } else { vec![] })
 }
 
@@ -1504,9 +1551,11 @@ fn colormap(it: &mut Interp, args: &[Value], nargout: usize) -> R {
         f.colormap = name;
     }
     let name = f.colormap.clone();
-    it.plots.touch();
-    if nargout == 0 && !args.is_empty() {
-        return Ok(vec![]);
+    if !args.is_empty() {
+        it.plots.touch();
+        if nargout == 0 {
+            return Ok(vec![]);
+        }
     }
     let rows: Vec<Vec<f64>> = (0..64).map(|i| render::cmap(&name, i as f64 / 63.0).iter().map(|&c| c as f64 / 255.0).collect()).collect();
     Ok(vec![Value::Num(Matrix::from_rows(&rows))])
@@ -1520,21 +1569,24 @@ fn figure(it: &mut Interp, args: &[Value], nargout: usize) -> R {
         Some(n) => return Err(format!("figure: invalid figure number {n}")),
         None => s.figures.iter().map(|f| f.id).max().unwrap_or(0) + 1,
     };
-    s.current = match s.figures.iter().position(|f| f.id == id) {
-        Some(i) => i,
-        None => {
-            s.figures.push(Figure::new(id));
-            s.figures.len() - 1
-        }
-    };
+    let old = s.figures.iter().position(|f| f.id == id);
+    s.current = old.unwrap_or_else(|| {
+        s.figures.push(Figure::new(id));
+        s.figures.len() - 1
+    });
     s.touch();
+    if old.is_some() {
+        it.skip_log(); // just switching figures; a new one starts its log with this statement
+    }
     Ok(if nargout > 0 { vec![Value::num(id as f64)] } else { vec![] })
 }
 
 fn clf(it: &mut Interp, _: &[Value], _: usize) -> R {
     let f = it.plots.fig();
-    *f = Figure::new(f.id);
-    touch(it)
+    *f = Figure::new(f.id); // its Octave log too
+    it.plots.touch();
+    it.skip_log();
+    Ok(vec![])
 }
 
 /// close | close all | close(n)
@@ -1553,7 +1605,9 @@ fn close(it: &mut Interp, args: &[Value], _: usize) -> R {
         None => {}
     }
     s.current = s.figures.len().saturating_sub(1);
-    touch(it)
+    s.touch();
+    it.skip_log();
+    Ok(vec![])
 }
 
 /// subplot(r, c, i) | subplot(rci), 1-based row-major i.
@@ -1827,6 +1881,26 @@ mod tests {
         let a = it.plots.axes();
         assert_eq!((a.title.as_str(), a.series[0].label.as_str()), ("x² + 2x", "x² + 2x"));
         call(&mut it, "polarplot", &[row(&[0., 1.]), row(&[1., 1.])], 0).unwrap();
+    }
+
+    #[test]
+    fn keypoints_builtin() {
+        let mut it = Interp::new();
+        it.eval("x = linspace(-1, 5, 301); p = keypoints(x, x.^2 - 4*x + 3);").unwrap();
+        let Some(Value::Struct(p)) = it.vars.get("p") else { panic!() };
+        assert_eq!(p["vertex"].matrix().unwrap().data, [2.0, -1.0]);
+        assert_eq!(p["roots"].matrix().unwrap().data, [1.0, 3.0, 0.0, 0.0]);
+        assert_eq!((p["max"].size(), p["inflection"].size()), ((0, 2), (0, 2)));
+        assert_eq!((p["symmetry"].as_str().unwrap(), p["yintercept"].scalar().unwrap()), ("x = 2", 3.0));
+        // toggle on the current axes, query its first line
+        it.eval("fplot(@(x) x.^3 - 3*x, [-3 3]); keypoints").unwrap();
+        assert!(it.plots.axes().keypoints);
+        it.eval("q = keypoints(); keypoints off").unwrap();
+        let Some(Value::Struct(q)) = it.vars.get("q") else { panic!() };
+        assert_eq!((q["max"].matrix().unwrap().data.as_slice(), q["symmetry"].as_str().unwrap()), (&[-1.0, 2.0][..], "odd"));
+        assert!(!it.plots.axes().keypoints);
+        assert!(it.eval("keypoints(1:3, 1:3)").is_err() && it.eval("keypoints maybe").is_err());
+        assert!(it.eval("close all; q = keypoints()").is_err());
     }
 
     #[test]

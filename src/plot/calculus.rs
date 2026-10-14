@@ -1,7 +1,7 @@
 //! Calculus and matrix visuals: intplot, tangentplot, riemann, slopefield, matview, eigplot.
 //! `f` is a function handle or an expression string, like fplot's.
 use super::builtins::{add, curve, first, func, letters, linspace, meshgrid, palette, pretty_fn, range, robust_ylim, round_limits, sample, touch, vectorize};
-use super::{Axes, Data, LineStyle, Marker, Note, Series, cursor};
+use super::{Axes, Data, LineStyle, Marker, Note, Series, Source, cursor};
 use crate::lang::Interp;
 use crate::value::{Func, Matrix, Value};
 
@@ -89,7 +89,7 @@ pub(super) fn intplot(it: &mut Interp, args: &[Value], nargout: usize) -> R {
             out.push(Series { color: Some(palette(k)), line: LineStyle::None, ..Series::new(Data::Fill { x, y }) });
         }
     }
-    out.push(Series { color: Some(palette(0)), width: 2.0, ..Series::new(Data::Line { x, y }) });
+    out.push(Series { color: Some(palette(0)), width: 2.0, source: Some(Source::Func(h)), ..Series::new(Data::Line { x, y }) });
     let ax = add(it, out);
     if !ax.hold {
         limits(ax, (lo - pad, hi + pad), &ys, true, 0.25);
@@ -124,9 +124,11 @@ pub(super) fn tangentplot(it: &mut Interp, args: &[Value], nargout: usize) -> R 
     }
     let (x, y, ys) = curve(it, "tangentplot", &h, lo, hi)?;
     let tan = Data::Line { x: vec![lo, hi], y: vec![y0 + slope * (lo - x0), y0 + slope * (hi - x0)] };
+    // the tangent as a function too, so zooming out extends it with the curve
+    let line = first(it.call(&Value::from("str2func"), &[Value::Str(format!("@(x) {y0} + {slope} * (x - {x0})"))], 1))?;
     let out = vec![
-        Series { color: Some(palette(0)), width: 2.0, ..Series::new(Data::Line { x, y }) },
-        Series { color: Some(palette(1)), ..Series::new(tan) },
+        Series { color: Some(palette(0)), width: 2.0, source: Some(Source::Func(h)), ..Series::new(Data::Line { x, y }) },
+        Series { color: Some(palette(1)), source: Some(Source::Func(line)), ..Series::new(tan) },
         Series { color: Some(palette(1)), line: LineStyle::None, marker: Marker::Point, width: 3.0, ..Series::new(Data::Line { x: vec![x0], y: vec![y0] }) },
     ];
     let name = pretty_fn(f, "x");
@@ -176,7 +178,7 @@ pub(super) fn riemann(it: &mut Interp, args: &[Value], nargout: usize) -> R {
     let (x, y, ys) = curve(it, "riemann", &h, lo - pad, hi + pad)?;
     let out = vec![
         Series { color: Some(palette(1)), width: 1.0, ..Series::new(Data::Fill { x: px, y: py }) },
-        Series { color: Some(palette(0)), width: 2.0, ..Series::new(Data::Line { x, y }) },
+        Series { color: Some(palette(0)), width: 2.0, source: Some(Source::Func(h)), ..Series::new(Data::Line { x, y }) },
     ];
     let ax = add(it, out);
     if !ax.hold {
@@ -436,6 +438,8 @@ mod tests {
             "notes",
         );
         run("fplot('exp(-x.^2/2).*cos(3*x)', [-4 4])", "fplot-title");
+        run("fplot(@(x) x.^3 - 3*x, [-3 3]); hold on; fplot(@(x) x.^2 - 4*x + 3); grid on; keypoints on", "keypoints");
+        run("x = linspace(0, 10, 300); plot(x, 3*exp(-(x-4).^2/3) - 1 + 0.15*sin(37*x.^2)); keypoints on", "keypoints-noisy");
         run("fimplicit('x.^2 + y.^2/4 - 1', [-3 3])", "fimplicit-title");
         run("polarplot(linspace(0, 2*pi, 200), 1 + cos(linspace(0, 2*pi, 200)))", "polarplot");
         render::save(it.plots.fig(), &Theme::light(), &dir.join("polarplot.svg"), 800, 600).unwrap();

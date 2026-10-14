@@ -1,8 +1,10 @@
 //! Numeric library: math, linear algebra, statistics, numerics, strings.
 pub mod ops;
 
+mod bits;
 mod calculus;
 mod fft;
+pub mod io;
 mod linalg;
 mod math;
 mod numeric;
@@ -21,6 +23,8 @@ pub fn lookup(name: &str) -> Option<Builtin> {
         .or_else(|| strings::lookup(name))
         .or_else(|| calculus::lookup(name))
         .or_else(|| ops::lookup(name))
+        .or_else(|| bits::lookup(name))
+        .or_else(|| io::lookup(name))
 }
 
 type R = Result<Vec<Value>, String>;

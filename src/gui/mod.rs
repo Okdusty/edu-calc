@@ -2,38 +2,54 @@
 //!   Calculator (default): math entry (libqalculate syntax) with the result as you type, answer
 //!     cards (tap one to reuse its input; chips switch to other forms, show the Octave code and send
 //!     it to Octave, Visualize plots it), an on-screen keypad. The plot pane shows once a figure exists.
-//!   Octave: script editor, console + REPL, workspace (math-view tooltips), interactive plot canvas.
+//!   Octave: script editor, console + REPL, workspace (math-view tooltips; numeric variables have a
+//!     Data Editor button), interactive plot canvas.
 //!     "→ Calculator" (REPL/console/editor context menu, Ctrl+M) moves the selection or current
 //!     line to the calculator in math view. ans and numeric variables are shared both ways.
+//! Header (icons, tooltips): Calc | Octave, Run (Octave mode); keypad menu (modes, number pad),
+//! calculator options (angle, approximation, precision, fractions, notation, result base, two's
+//! complement, bits; `set KEY VALUE` in the entry changes them too), ☰ for everything else.
 //!
-//! Keypad: □ marks a slot. A key's template wraps the selection into its first □ and selects the
-//! next one; Tab / Shift+Tab in the calculator entry jump between □, Enter refuses (and highlights)
-//! leftover ones. In Octave mode keys go to the REPL or script, whichever had focus last.
+//! Completion (calculator entry, REPL, script editor; complete.rs): typing an identifier lists
+//! matches with a signature and a short description; Up/Down, Tab or Return accepts, Esc closes.
+//!
+//! Keypad: modes General / Programming / Algebra / Custom (keypad.ini groups) with an optional
+//! number pad beside them; F9 hides it and brings the last mode back. □ marks a slot. A key's
+//! template wraps the selection into its first □ and selects the next one; Tab / Shift+Tab in the
+//! calculator entry jump between □, Enter refuses (and highlights) leftover ones. Programming's
+//! BIN/OCT/DEC/HEX set the input and result base (A-F need HEX) and show hex/dec/oct/bin of the
+//! result under the entry. In Octave mode keys go to the REPL or script, whichever had focus last.
 //!
 //! Customizing (files in ~/.config/qcalcp, created with documented defaults on first run):
 //!   qcalcp.ini
-//!     [ui]     mode=calc|octave (remembered), keypad (calculator mode), keypad_octave
-//!     [calc]   auto_visual (run an answer's visualization after Enter), keypad_side=auto|bottom|right
+//!     [ui]     mode=calc|octave (remembered), keypad_mode=general|programming|algebra|custom|
+//!              numpad|none, number_pad, keypad_octave
+//!     [calc]   auto_visual (run an answer's visualization after Enter), keypad_side=auto|bottom|right,
+//!              angle approx precision fraction notation base input_base twos_complement bits
 //!     [layout] orientation=horizontal|vertical  side=plot-right|plot-left (plot-left = plot first,
 //!              i.e. on top when vertical)  split, editor_split (px)
 //!              show_editor, show_console, show_workspace
-//!     [window] width, height, maximized     ([ui], [layout], [window], auto_visual, dark saved on exit)
+//!     [window] width, height, maximized     ([ui], [layout], [window], [calc] but keypad_side, and
+//!              dark are saved on exit)
 //!     [theme]  dark, plot_bg, plot_fg, plot_grid (CSS colors), palette=#..;#..;..., font,
 //!              font_size (plot), editor_font (Pango, e.g. "Monospace 11")
 //!     [input]  rotate_speed (rad per dragged px), zoom_step (per wheel notch),
 //!              hover_cursor (readout under the mouse), pin_radius (px reach for picks and unpinning)
-//!     [keys]   <action>=<GTK accel>[;<accel>...], empty = unbound. Actions: run mode keypad to_calc
-//!              auto_visual new open save save_as export reset_view trace clear_pins toggle_layout
-//!              swap_sides toggle_editor toggle_console toggle_workspace dark fullscreen quit
-//!   keypad.ini one [group] per page: columns=N, keys=label|template;... (see the file's comments)
+//!     [keys]   <action>=<GTK accel>[;<accel>...], empty = unbound. Actions: run mode keypad
+//!              number_pad data to_calc auto_visual new open save save_as export reset_view trace
+//!              clear_pins toggle_layout swap_sides toggle_editor toggle_console toggle_workspace
+//!              dark fullscreen quit calc_twos
+//!   keypad.ini one [group] per page: columns=N, keys=label|template;... (see the file's comments);
+//!              General, Programming, Algebra, Number pad by name, any other group is a Custom page
 //!   history.txt calculator history, one answer per line: input, math view, result, approximation
 //!              (tab-separated, last 500)
 //!   style.css  user CSS at USER priority, live-reloaded. Names: window.qcalcp, headerbar, .editor,
 //!              .console, .repl, .workspace, .plot-bar, .figure-selector, .plot-status, .plot,
 //!              paned > separator; calculator: .calc, .calc-entry, .calc-preview, .calc-history,
-//!              .calc-card, .calc-input, .calc-result, .calc-approx, .calc-message, .calc-chip;
+//!              .calc-bases, .calc-card, .calc-input, .calc-result, .calc-approx, .calc-message,
+//!              .calc-chip; completion: popover.completion, .completion row, .completion .desc;
 //!              keypad: .keypad, .keypad button, .keypad .op (operators, actions), .keypad .fn
-//!              (function templates), .keypad .basic / .scientific / ... (page name, lowercase)
+//!              (function templates), .keypad .general / .programming / .number-pad / ... (group)
 //!
 //! Canvas: drag pans (2D) / rotates (3D), pinch or wheel zooms, two-finger twist turns 3D,
 //! double-click or long-press resets the axes under the pointer. Data cursor: hovering shows the
@@ -42,7 +58,9 @@
 //! with the canvas focused Left/Right step, Up/Down switch series, Enter pins.
 mod calc;
 mod canvas;
+mod complete;
 mod config;
+mod data;
 mod keypad;
 
 use std::cell::{Cell, RefCell};
@@ -54,8 +72,11 @@ use gtk4 as gtk;
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 
+use crate::complete::Lang;
 use crate::lang::Interp;
+use crate::qalc;
 use crate::value::{Func, Value};
+use complete::Popup;
 use config::Config;
 
 const BASE_CSS: &str = "
@@ -70,9 +91,22 @@ headerbar button, .plot-bar button { min-height: 36px; min-width: 36px; }
 .calc-message { color: #e5a50a; }
 .calc-chip { min-height: 32px; padding: 0 12px; }
 .keypad { padding: 4px; }
-.keypad button { min-height: 44px; min-width: 44px; font-size: 1.15em; }
+.keypad button { min-height: 44px; min-width: 40px; padding-left: 4px; padding-right: 4px; font-size: 1.15em; }
 .keypad .op { font-weight: bold; }
+.calc-bases { font-size: 0.9em; }
+.completion row { padding: 2px 6px; }
+.completion .desc { font-size: 0.85em; }
 ";
+
+/// Calculator options with radio items: [calc] key, menu title, (label, value).
+const OPTIONS: [(&str, &str, &[(&str, &str)]); 6] = [
+    ("angle", "Angle", &[("Radians", "rad"), ("Degrees", "deg"), ("Gradians", "gra")]),
+    ("approx", "Approximation", &[("Exact", "exact"), ("Try Exact", "try"), ("Approximate", "approx")]),
+    ("fraction", "Fractions", &[("Auto", "auto"), ("Decimal", "decimal"), ("Fraction", "fraction"), ("Mixed", "mixed")]),
+    ("notation", "Notation", &[("Auto", "auto"), ("Normal", "normal"), ("Scientific", "sci"), ("Engineering", "eng")]),
+    ("base", "Result Base", &[("Binary", "2"), ("Octal", "8"), ("Decimal", "10"), ("Hexadecimal", "16")]),
+    ("bits", "Bits", &[("Auto", "0"), ("8", "8"), ("16", "16"), ("32", "32"), ("64", "64")]),
+];
 
 /// Text widgets, for keypad targets, "→ Calculator" sources and "Send to Octave".
 #[derive(Clone, Copy, PartialEq)]
@@ -92,8 +126,14 @@ struct Ui {
     console: gtk::TextView,
     repl: gtk::Entry,
     calc: calc::Calc,
-    /// keypad holder, moved between the calculator view and the Octave side
-    keypad: gtk::Box,
+    /// completion popups of the calculator entry, the REPL and the editor
+    calc_pop: Popup,
+    repl_pop: Popup,
+    editor_pop: Popup,
+    /// moved between the calculator view and the Octave side
+    keypad: keypad::Keypad,
+    /// options menu's precision
+    precision: gtk::SpinButton,
     /// last focused text widget, and the last of REPL / editor
     focus: Cell<Focus>,
     octave_focus: Cell<Focus>,
@@ -161,6 +201,8 @@ fn ini_path() -> PathBuf {
 
 fn build(app: &gtk::Application, script: Option<PathBuf>) {
     let (mut cfg, warnings) = Config::load(&ini_path());
+    let (opts, opt_warn) = qalc::Options::load_ini(&ini_path());
+    qalc::set_options(&opts);
     cfg.calc_mode &= script.is_none(); // a script opens in Octave mode
     let (interp, msg) = crate::new_interp();
     let scroll = |child: &gtk::Widget| gtk::ScrolledWindow::builder().child(child).hexpand(true).vexpand(true).build();
@@ -218,7 +260,7 @@ fn build(app: &gtk::Application, script: Option<PathBuf>) {
     fig_select.add_css_class("figure-selector");
     let reset = gtk::Button::builder().icon_name("zoom-original-symbolic").tooltip_text("Reset view (double-click / long-press on an axes)").action_name("app.reset-view").build();
     let trace = gtk::ToggleButton::builder()
-        .label("Trace")
+        .icon_name("find-location-symbolic")
         .tooltip_text("Trace mode: drag follows a series; Left/Right step, Up/Down switch series, Enter or tap pins")
         .action_name("app.trace")
         .build();
@@ -227,6 +269,7 @@ fn build(app: &gtk::Application, script: Option<PathBuf>) {
     bar.append(&fig_select);
     bar.append(&reset);
     bar.append(&trace);
+    bar.append(&canvas.tools);
     bar.append(&canvas.status);
     let plot_side = gtk::Box::new(gtk::Orientation::Vertical, 0);
     plot_side.append(&bar);
@@ -236,17 +279,24 @@ fn build(app: &gtk::Application, script: Option<PathBuf>) {
     main.set_position(cfg.split);
 
     let header = gtk::HeaderBar::new();
-    let calc_btn = gtk::ToggleButton::builder().label("Calc").tooltip_text("Calculator: math entry, keypad, answer history (F2 switches)").build();
-    let octave_btn = gtk::ToggleButton::builder().label("Octave").tooltip_text("Octave: script editor, console, workspace (F2 switches)").group(&calc_btn).build();
+    let calc_btn = gtk::ToggleButton::builder().icon_name("accessories-calculator-symbolic").tooltip_text("Calculator: math entry, keypad, answer history (F2 switches)").build();
+    let octave_btn = gtk::ToggleButton::builder().icon_name("utilities-terminal-symbolic").tooltip_text("Octave: script editor, console, workspace (F2 switches)").group(&calc_btn).build();
     let modes = gtk::Box::builder().css_classes(["linked"]).build();
     modes.append(&calc_btn);
     modes.append(&octave_btn);
     header.pack_start(&modes);
-    let run_btn = gtk::Button::builder().label("Run").tooltip_text("Run selection or whole script").action_name("app.run").build();
+    let run_btn = gtk::Button::builder().icon_name("media-playback-start-symbolic").tooltip_text("Run selection or whole script (Ctrl+Return, F5)").action_name("app.run").build();
     run_btn.add_css_class("suggested-action");
     header.pack_start(&run_btn);
-    header.pack_end(&gtk::MenuButton::builder().icon_name("open-menu-symbolic").menu_model(&menu()).primary(true).tooltip_text("Menu").build());
-    header.pack_end(&gtk::ToggleButton::builder().icon_name("input-keyboard-symbolic").tooltip_text("Keypad").action_name("app.keypad").build());
+    let precision = gtk::SpinButton::with_range(1.0, 100.0, 1.0);
+    for (icon, tip, pop) in [
+        ("open-menu-symbolic", "Menu", gtk::PopoverMenu::from_model(Some(&menu()))),
+        ("preferences-system-symbolic", "Calculator options", options_menu(&precision)),
+        ("input-keyboard-symbolic", "Keypad (F9 shows / hides)", gtk::PopoverMenu::from_model(Some(&keypad_menu()))),
+    ] {
+        let b = gtk::MenuButton::builder().icon_name(icon).popover(&pop).tooltip_text(tip).primary(tip == "Menu").has_frame(false).build();
+        header.pack_end(&b);
+    }
 
     let win = gtk::ApplicationWindow::builder()
         .application(app)
@@ -259,6 +309,10 @@ fn build(app: &gtk::Application, script: Option<PathBuf>) {
     win.add_css_class("qcalcp");
 
     let dark = cfg.dark;
+    let (pages, keypad_warn) = keypad::load(&crate::config_dir().join("keypad.ini"));
+    let calc_pop = Popup::new(complete::Target::Entry(calc.entry.clone()), Lang::Math);
+    let repl_pop = Popup::new(complete::Target::Entry(repl.clone()), Lang::Octave);
+    let editor_pop = Popup::new(complete::Target::Text(editor.clone()), Lang::Octave);
     let ui = Rc::new(Ui {
         win,
         interp: RefCell::new(interp),
@@ -268,7 +322,11 @@ fn build(app: &gtk::Application, script: Option<PathBuf>) {
         console,
         repl,
         calc,
-        keypad: gtk::Box::builder().orientation(gtk::Orientation::Vertical).hexpand(false).build(),
+        calc_pop,
+        repl_pop,
+        editor_pop,
+        keypad: keypad::Keypad::new(&pages),
+        precision,
         focus: Cell::new(Focus::Calc),
         octave_focus: Cell::new(Focus::Repl),
         mode_btns: [octave_btn, calc_btn],
@@ -292,9 +350,8 @@ fn build(app: &gtk::Application, script: Option<PathBuf>) {
         css_monitor: RefCell::new(None),
     });
 
-    let (pages, keypad_warn) = keypad::load(&crate::config_dir().join("keypad.ini"));
     let u = ui.clone();
-    ui.keypad.append(&keypad::widget(&pages, move |act| key_press(&u, act)));
+    ui.keypad.connect(move |act| key_press(&u, act));
     for (b, calc) in ui.mode_btns.iter().zip([false, true]) {
         let u = ui.clone();
         b.connect_toggled(move |b| {
@@ -316,12 +373,17 @@ fn build(app: &gtk::Application, script: Option<PathBuf>) {
     }
 
     calc::attach(&ui); // history first, so startup warnings land below it
+    complete::attach(&ui, |u| &u.calc_pop);
+    complete::attach(&ui, |u| &u.repl_pop);
+    complete::attach(&ui, |u| &u.editor_pop);
     actions(app, &ui);
+    sync_options(&ui);
     apply_layout(&ui);
     load_css(&ui);
     set_dark(&ui, dark);
     canvas::attach(&ui);
     ui.print(&warnings, true);
+    ui.print(&opt_warn, true);
     ui.print(&keypad_warn, true);
     ui.print(&msg, false);
 
@@ -348,13 +410,14 @@ fn build(app: &gtk::Application, script: Option<PathBuf>) {
     let (u, r) = (ui.clone(), repl.clone());
     keys.connect_key_pressed(move |_, key, _, _| {
         let step = match key {
+            _ if u.repl_pop.is_open() => return glib::Propagation::Proceed, // Up/Down pick a completion
             gdk::Key::Up => -1,
             gdk::Key::Down => 1,
             _ => return glib::Propagation::Proceed,
         };
         let (h, pos) = &mut *u.history.borrow_mut();
         *pos = (*pos as isize + step).clamp(0, h.len() as isize) as usize;
-        r.set_text(h.get(*pos).map_or("", String::as_str));
+        u.repl_pop.quiet(|| r.set_text(h.get(*pos).map_or("", String::as_str)));
         r.set_position(-1);
         glib::Propagation::Stop
     });
@@ -420,7 +483,7 @@ fn menu() -> gio::Menu {
     let menu = gio::Menu::new();
     menu.append_section(
         None,
-        &section(&[("Calculator ⇄ Octave", "mode"), ("Keypad", "keypad"), ("Auto-Visualize", "auto-visual"), ("Octave → Calculator", "to-calc")]),
+        &section(&[("Calculator ⇄ Octave", "mode"), ("Keypad", "keypad"), ("Auto-Visualize", "auto-visual"), ("Octave → Calculator", "to-calc"), ("Data Editor…", "data")]),
     );
     menu.append_section(None, &section(&[("New", "new"), ("Open…", "open"), ("Save", "save"), ("Save As…", "save-as")]));
     menu.append_section(None, &section(&[("Export Plot…", "export"), ("Reset View", "reset-view"), ("Clear Pins", "clear-pins")]));
@@ -431,6 +494,46 @@ fn menu() -> gio::Menu {
     menu.append_section(None, &section(&[("Dark Theme", "dark"), ("Fullscreen", "fullscreen")]));
     menu.append_section(None, &section(&[("Quit", "quit")]));
     menu
+}
+
+fn keypad_menu() -> gio::Menu {
+    let modes = gio::Menu::new();
+    for (mode, label) in keypad::MODES.into_iter().chain([("none", "None")]) {
+        modes.append(Some(label), Some(&format!("app.keypad-mode::{mode}")));
+    }
+    let menu = gio::Menu::new();
+    menu.append_section(None, &modes);
+    menu.append(Some("Always Show Number Pad"), Some("app.number-pad"));
+    menu
+}
+
+/// Angle and approximation inline, the other choices in submenus, then two's complement and the
+/// precision spin.
+fn options_menu(precision: &gtk::SpinButton) -> gtk::PopoverMenu {
+    let menu = gio::Menu::new();
+    let more = gio::Menu::new();
+    for (i, (key, title, choices)) in OPTIONS.iter().enumerate() {
+        let m = gio::Menu::new();
+        for (label, v) in *choices {
+            m.append(Some(label), Some(&format!("app.calc-{key}::{v}")));
+        }
+        if i < 2 {
+            menu.append_section(Some(title), &m);
+        } else {
+            more.append_submenu(Some(title), &m);
+        }
+    }
+    more.append(Some("Two's Complement"), Some("app.calc-twos"));
+    let spin = gio::MenuItem::new(None, None);
+    spin.set_attribute_value("custom", Some(&"precision".to_variant()));
+    more.append_item(&spin);
+    menu.append_section(None, &more);
+    let pop = gtk::PopoverMenu::from_model(Some(&menu));
+    let row = gtk::Box::builder().spacing(12).build();
+    row.append(&gtk::Label::builder().label("Precision").tooltip_text("Significant digits of approximate results").hexpand(true).xalign(0.0).build());
+    row.append(precision);
+    pop.add_child(&row, "precision");
+    pop
 }
 
 fn action(app: &gtk::Application, ui: &Rc<Ui>, name: &str, f: impl Fn(&Rc<Ui>) + 'static) {
@@ -503,15 +606,22 @@ fn actions(app: &gtk::Application, ui: &Rc<Ui>) {
         apply_layout(ui);
     });
     toggle(app, ui, "dark", c.dark, set_dark);
-    toggle(app, ui, "keypad", if c.calc_mode { c.keypad } else { c.keypad_octave }, |ui, on| {
-        {
-            let mut c = ui.cfg.borrow_mut();
-            if c.calc_mode {
-                c.keypad = on;
-            } else {
-                c.keypad_octave = on;
-            }
+    // states are set by apply_layout
+    toggle(app, ui, "keypad", false, |ui, on| {
+        let last = ui.cfg.borrow().keypad_last;
+        set_keypad(ui, if on { last } else { "none" });
+    });
+    let a = gio::SimpleAction::new_stateful("keypad-mode", Some(glib::VariantTy::STRING), &"none".to_variant());
+    let u = ui.clone();
+    a.connect_activate(move |_, v| {
+        let v = v.and_then(|v| v.str().map(String::from)).unwrap_or_default();
+        if let Some(mode) = keypad::MODES.iter().map(|m| m.0).chain(["none"]).find(|m| *m == v) {
+            set_keypad(&u, mode);
         }
+    });
+    app.add_action(&a);
+    toggle(app, ui, "number-pad", c.number_pad, |ui, on| {
+        ui.cfg.borrow_mut().number_pad = on;
         apply_layout(ui);
     });
     toggle(app, ui, "auto-visual", c.auto_visual, |ui, on| ui.cfg.borrow_mut().auto_visual = on);
@@ -520,6 +630,43 @@ fn actions(app: &gtk::Application, ui: &Rc<Ui>) {
             ui.win.unfullscreen();
         } else {
             ui.win.fullscreen();
+        }
+    });
+    action(app, ui, "data", |ui| data::open(ui, None));
+    let a = gio::SimpleAction::new("edit-var", Some(glib::VariantTy::STRING));
+    let u = ui.clone();
+    a.connect_activate(move |_, v| {
+        if let Some(name) = v.and_then(|v| v.str().map(String::from)) {
+            data::open(&u, Some(&name));
+        }
+    });
+    app.add_action(&a);
+    // calculator options; states are set by sync_options
+    for (key, _, _) in OPTIONS {
+        let a = gio::SimpleAction::new_stateful(&format!("calc-{key}"), Some(glib::VariantTy::STRING), &"".to_variant());
+        let u = ui.clone();
+        a.connect_activate(move |_, v| {
+            let mut o = qalc::options();
+            match v.and_then(|v| v.str().map(String::from)).map(|v| o.set(key, &v)) {
+                Some(Ok(())) => apply_options(&u, &o),
+                Some(Err(e)) => u.print(&format!("{key}: {e}\n"), true),
+                None => {}
+            }
+        });
+        app.add_action(&a);
+    }
+    toggle(app, ui, "calc-twos", false, |ui, on| {
+        let mut o = qalc::options();
+        o.twos_complement = on;
+        apply_options(ui, &o);
+    });
+    let u = ui.clone();
+    ui.precision.connect_value_changed(move |s| {
+        let mut o = qalc::options();
+        let p = s.value_as_int().max(1) as u32;
+        if o.precision != p {
+            o.precision = p;
+            apply_options(&u, &o);
         }
     });
     action(app, ui, "quit", |ui| ui.win.close());
@@ -574,31 +721,85 @@ fn apply_layout(ui: &Ui) {
     ui.side.set_visible(calc || c.show_editor || c.show_console || c.show_workspace);
     ui.run_btn.set_visible(!calc);
     // keypad: under / beside the calculator entry, or under the Octave panels
-    let shown = if calc { c.keypad } else { c.keypad_octave };
+    let mode = if c.keypad_mode == "none" { c.keypad_last } else { c.keypad_mode };
+    let shown = if calc { c.keypad_mode != "none" } else { c.keypad_octave };
     let right = calc && match c.keypad_side {
         "right" => true,
         "bottom" => false,
         _ => ui.calc.wide.get(),
     };
     let slot = if calc { &ui.calc.body } else { &ui.octave_side };
-    if ui.keypad.parent().as_ref() != Some(slot.upcast_ref()) {
-        if let Some(p) = ui.keypad.parent().and_downcast::<gtk::Box>() {
-            p.remove(&ui.keypad);
+    let pad = &ui.keypad.root;
+    if pad.parent().as_ref() != Some(slot.upcast_ref()) {
+        if let Some(p) = pad.parent().and_downcast::<gtk::Box>() {
+            p.remove(pad);
         }
-        slot.append(&ui.keypad);
+        slot.append(pad);
     }
     ui.calc.body.set_orientation(if right { gtk::Orientation::Horizontal } else { gtk::Orientation::Vertical });
-    ui.keypad.set_vexpand(right);
-    ui.keypad.set_visible(shown);
+    pad.set_vexpand(right);
+    pad.set_visible(shown);
+    // number pad beside the mode's keys when the keypad spans the width, below them when it's to the right
+    ui.keypad.show(mode, c.number_pad, !calc || !(right || ui.calc.narrow.get()));
     // the on-screen keypad stands in for the touch keyboard
     ui.calc.entry.set_input_hints(if calc && shown { gtk::InputHints::INHIBIT_OSK } else { gtk::InputHints::NONE });
     let figs = ui.interp.try_borrow().map_or(true, |ip| !ip.plots.figures.is_empty());
     ui.plot_side.set_visible(!calc || figs);
     drop(c);
     ui.mode_btns[calc as usize].set_active(true);
-    if let Some(a) = ui.win.application().and_then(|a| a.lookup_action("keypad")).and_downcast::<gio::SimpleAction>() {
-        a.set_state(&shown.to_variant());
+    set_state(ui, "keypad", shown.to_variant());
+    set_state(ui, "keypad-mode", if shown { mode } else { "none" }.to_variant());
+}
+
+/// State of a stateful app action (menu radio / check items).
+fn set_state(ui: &Ui, action: &str, v: glib::Variant) {
+    if let Some(a) = ui.win.application().and_then(|a| a.lookup_action(action)).and_downcast::<gio::SimpleAction>() {
+        a.set_state(&v);
     }
+}
+
+/// Keypad `mode` (keypad::MODES or "none"). In Octave mode "none" hides only the keypad there.
+fn set_keypad(ui: &Rc<Ui>, mode: &'static str) {
+    {
+        let mut c = ui.cfg.borrow_mut();
+        if c.calc_mode || mode != "none" {
+            c.keypad_mode = mode;
+        }
+        if mode != "none" {
+            c.keypad_last = mode;
+        }
+        if !c.calc_mode {
+            c.keypad_octave = mode != "none";
+        }
+    }
+    apply_layout(ui);
+    calc::refresh(ui); // the bases readout comes and goes with Programming
+}
+
+/// Use `o` for calculations, show it in the menu and keypad, recompute the live result.
+fn apply_options(ui: &Rc<Ui>, o: &qalc::Options) {
+    qalc::set_options(o);
+    sync_options(ui);
+    calc::refresh(ui);
+}
+
+/// Options menu, precision and the keypad's base keys from the options in use.
+fn sync_options(ui: &Ui) {
+    let o = qalc::options();
+    for (key, _, _) in OPTIONS {
+        let v = match key {
+            "angle" => o.angle.clone(),
+            "approx" => o.approx.clone(),
+            "fraction" => o.fraction.clone(),
+            "notation" => o.notation.clone(),
+            "base" => o.base.to_string(),
+            _ => o.bits.to_string(),
+        };
+        set_state(ui, &format!("calc-{key}"), v.to_variant());
+    }
+    set_state(ui, "calc-twos", o.twos_complement.to_variant());
+    ui.precision.set_value(o.precision as f64);
+    ui.keypad.set_base(o.input_base);
 }
 
 fn set_mode(ui: &Rc<Ui>, calc: bool) {
@@ -619,24 +820,37 @@ fn focus_mode(ui: &Ui) {
 }
 
 fn key_press(ui: &Rc<Ui>, act: &keypad::Act) {
+    if let keypad::Act::Base(n) = act {
+        let mut o = qalc::options();
+        (o.base, o.input_base) = (*n, *n);
+        return apply_options(ui, &o);
+    }
     let calc = ui.cfg.borrow().calc_mode;
-    let t = if calc {
+    let (t, pop) = if calc {
         ui.calc.entry.grab_focus_without_selecting();
-        keypad::Target::Entry(&ui.calc.entry, false)
+        (keypad::Target::Entry(&ui.calc.entry, false), &ui.calc_pop)
     } else if ui.octave_focus.get() == Focus::Editor {
         ui.editor.grab_focus();
-        keypad::Target::Text(&ui.editor)
+        (keypad::Target::Text(&ui.editor), &ui.editor_pop)
     } else {
         ui.repl.grab_focus_without_selecting();
-        keypad::Target::Entry(&ui.repl, true)
+        (keypad::Target::Entry(&ui.repl, true), &ui.repl_pop)
     };
-    keypad::press(t, act);
+    pop.quiet(|| keypad::press(t, act));
 }
 
 /// Answer's Octave code -> REPL entry, or the end of the script if the editor was used last.
 fn send_to_octave(ui: &Rc<Ui>, code: &str) {
     set_mode(ui, false);
-    if ui.octave_focus.get() == Focus::Editor && ui.editor.is_visible() {
+    // several lines (a figure's code) are a script: the one-line REPL would mangle them
+    if code.contains('\n') && !ui.editor.is_visible() {
+        ui.cfg.borrow_mut().show_editor = true;
+        apply_layout(ui);
+        if let Some(a) = ui.win.application().and_then(|a| a.lookup_action("toggle-editor")).and_downcast::<gio::SimpleAction>() {
+            a.set_state(&true.to_variant()); // keep the menu's check in step
+        }
+    }
+    if (ui.octave_focus.get() == Focus::Editor || code.contains('\n')) && ui.editor.is_visible() {
         let b = ui.editor.buffer();
         let mut end = b.end_iter();
         let nl = if end.starts_line() { "" } else { "\n" };
@@ -644,7 +858,7 @@ fn send_to_octave(ui: &Rc<Ui>, code: &str) {
         b.place_cursor(&b.end_iter());
         ui.editor.scroll_mark_onscreen(&b.get_insert());
     } else {
-        ui.repl.set_text(code);
+        ui.repl_pop.quiet(|| ui.repl.set_text(code));
         ui.repl.set_position(-1);
     }
 }
@@ -677,7 +891,7 @@ fn to_calc(ui: &Rc<Ui>) {
     }
     let math = crate::qalc::from_octave(code);
     set_mode(ui, true);
-    ui.calc.entry.set_text(&math);
+    ui.calc_pop.quiet(|| ui.calc.entry.set_text(&math));
     ui.calc.entry.set_position(-1);
 }
 
@@ -776,6 +990,11 @@ fn sync(ui: &Ui) {
         let row = gtk::Box::builder().spacing(12).margin_start(8).margin_end(8).margin_top(6).margin_bottom(6).build();
         row.append(&gtk::Label::builder().label(name.as_str()).xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).build());
         row.append(&gtk::Label::builder().label(v.summary()).css_classes(["dim-label"]).build());
+        if matches!(v, Value::Num(_) | Value::Bool(_)) {
+            let b = gtk::Button::builder().icon_name("x-office-spreadsheet-symbolic").tooltip_text("Edit in Data Editor").action_name("app.edit-var").action_target(&name.to_variant()).build();
+            b.add_css_class("flat");
+            row.append(&b);
+        }
         // math view of strings and anonymous functions, computed on hover
         let src = match v {
             Value::Str(s) => Some(s.clone()),
@@ -823,7 +1042,7 @@ fn save_state(ui: &Ui) {
     c.editor_split = ui.edit_paned.position();
     (c.width, c.height) = ui.win.default_size();
     c.maximized = ui.win.is_maximized();
-    if let Err(e) = c.save_state(&ini_path()) {
+    if let Err(e) = c.save_state(&ini_path()).and_then(|_| qalc::options().save_ini(&ini_path())) {
         eprintln!("qcalcp.ini: {e}");
     }
 }

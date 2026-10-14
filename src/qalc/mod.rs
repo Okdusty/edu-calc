@@ -3,10 +3,13 @@
 //! One global calculator; every call into it holds `PUSHED`'s lock.
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString, c_char, c_int};
-use std::sync::{Mutex, MutexGuard};
+use std::path::Path;
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
+use gtk4::glib;
 
 use crate::lang::Interp;
-use crate::plot::{Data, Figure, Series};
+use crate::plot::{Data, Figure, Series, Source};
 use crate::value::{Builtin, C64, CMatrix, Matrix, Value};
 
 unsafe extern "C" {
@@ -24,6 +27,8 @@ unsafe extern "C" {
         msecs: c_int,
     ) -> *mut c_char;
     fn qs_free(s: *mut c_char);
+    fn qs_options(angle: c_int, approx: c_int, precision: c_int, fraction: c_int, notation: c_int, base: c_int, input_base: c_int, twos: c_int, bits: c_int);
+    fn qs_catalog() -> *mut c_char;
 }
 
 const TIMEOUT_MS: i32 = 5000;
@@ -59,6 +64,306 @@ pub struct Answer {
     /// "convert to Octave" artifact for plots.
     #[allow(dead_code)] // read by the calculator views
     pub visual: Option<String>,
+}
+
+/// What a catalog entry is.
+#[allow(dead_code)] // used by complete.rs and the frontends
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemKind {
+    Function,
+    /// variables and constants (pi, e, c, ...)
+    Variable,
+    Unit,
+}
+
+/// One libqalculate name for completion (each alternative name gets its own entry).
+#[allow(dead_code)] // used by complete.rs and the frontends
+#[derive(Clone, Debug)]
+pub struct CatalogItem {
+    pub name: String,
+    pub kind: ItemKind,
+    /// text that replaces the typed prefix: "integrate(□, □, □)" (required arguments as □), "pi", "km"
+    pub insert: String,
+    /// "integrate(f, a, b, x = x)" for functions, "km (kilometer, length)" style for units
+    pub signature: String,
+    /// one short line: "Integrate", "Archimedes' constant (3.14159…)"
+    pub desc: String,
+}
+
+/// Every active function, variable/constant and unit name of libqalculate, built once (lazily).
+#[allow(dead_code)] // used by complete.rs and the frontends
+pub fn catalog() -> &'static [CatalogItem] {
+    static CATALOG: OnceLock<Vec<CatalogItem>> = OnceLock::new();
+    CATALOG.get_or_init(|| {
+        let s = {
+            let _g = lock();
+            take(unsafe { qs_catalog() }).unwrap_or_default()
+        };
+        list(&s)
+            .iter()
+            .filter_map(|r| {
+                let [kind, name, insert, signature, desc] = r.split('\x1f').collect::<Vec<_>>()[..] else { return None };
+                let kind = match kind {
+                    "f" => ItemKind::Function,
+                    "v" => ItemKind::Variable,
+                    _ => ItemKind::Unit,
+                };
+                Some(CatalogItem { name: name.into(), kind, insert: insert.into(), signature: signature.into(), desc: desc.into() })
+            })
+            .collect()
+    })
+}
+
+/// Calculator settings (qcalcp.ini [calc]; `set KEY VALUE` in the calculator entry changes them
+/// live, like qalc's `set`). Defaults are qalc's.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Options {
+    /// "rad" | "deg" | "gra"
+    pub angle: String,
+    /// "exact" | "try" (try exact, the default) | "approx"
+    pub approx: String,
+    /// significant digits of approximate results
+    pub precision: u32,
+    /// "auto" | "decimal" | "fraction" | "mixed"
+    pub fraction: String,
+    /// "auto" | "normal" | "sci" | "eng"
+    pub notation: String,
+    /// result base 2..=36 (2 bin, 8 oct, 10 dec, 16 hex)
+    pub base: u32,
+    /// base numbers are typed in (A-F digits need 16)
+    pub input_base: u32,
+    /// negative numbers in bin (and in hex when `bits` is set) as two's complement
+    pub twos_complement: bool,
+    /// bit width for bin/hex display and bitcmp/bitrot: 0 = automatic, else 8/16/32/64/128
+    pub bits: u32,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            angle: "rad".into(),
+            approx: "try".into(),
+            precision: 10,
+            fraction: "auto".into(),
+            notation: "auto".into(),
+            base: 10,
+            input_base: 10,
+            twos_complement: true,
+            bits: 0,
+        }
+    }
+}
+
+/// The Options keys, as in qcalcp.ini [calc].
+const KEYS: [&str; 9] = ["angle", "approx", "precision", "fraction", "notation", "base", "input_base", "twos_complement", "bits"];
+
+/// A key or one of qalc's names for it ("inbase", "input base", "two's", "exp" ...) -> the Options key.
+fn canon(key: &str) -> Option<&'static str> {
+    let k = key.trim().to_ascii_lowercase().replace('\'', "").replace([' ', '-'], "_");
+    Some(match k.as_str() {
+        "angle" | "angle_unit" => "angle",
+        "approx" | "approximation" => "approx",
+        "precision" | "prec" => "precision",
+        "fraction" | "fractions" | "frac" => "fraction",
+        "notation" | "exp" | "exp_mode" => "notation",
+        "base" | "outbase" | "out_base" | "output_base" => "base",
+        "input_base" | "inbase" | "in_base" => "input_base",
+        "twos" | "twos_complement" => "twos_complement",
+        "bits" | "binary_bits" => "bits",
+        _ => return None,
+    })
+}
+
+impl Options {
+    /// `set KEY VALUE` / ini keys: angle, approx, precision, fraction, notation, base, input_base,
+    /// twos_complement, bits. Values as in the field docs, plus qalc's aliases (deg, degrees,
+    /// hex, bin, on/off ...). Err names the problem.
+    pub fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
+        let k = canon(key).ok_or_else(|| format!("unknown setting '{}' (one of {})", key.trim(), KEYS.join(", ")))?;
+        let v = value.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+        let err = |want: &str| format!("{k}: expected {want} (got '{}')", value.trim());
+        // (aliases, value) table lookup
+        let pick = |t: &[(&[&str], &str)], want: &str| {
+            t.iter().find(|(names, _)| names.contains(&v.as_str())).map(|(_, c)| c.to_string()).ok_or_else(|| err(want))
+        };
+        let base = || match v.as_str() {
+            "bin" | "binary" => Ok(2),
+            "oct" | "octal" => Ok(8),
+            "dec" | "decimal" => Ok(10),
+            "hex" | "hexadecimal" => Ok(16),
+            n => n.parse().ok().filter(|b| (2..=36).contains(b)).ok_or_else(|| err("bin, oct, dec, hex or 2..36")),
+        };
+        match k {
+            "angle" => {
+                let t: &[(&[&str], &str)] = &[(&["rad", "radian", "radians"], "rad"), (&["deg", "degree", "degrees"], "deg"), (&["gra", "grad", "gradian", "gradians"], "gra")];
+                self.angle = pick(t, "rad, deg or gra")?
+            }
+            "approx" => {
+                let t: &[(&[&str], &str)] = &[(&["try", "try exact", "auto", "off"], "try"), (&["exact", "always exact"], "exact"), (&["approx", "approximate", "on"], "approx")];
+                self.approx = pick(t, "exact, try or approx")?
+            }
+            "precision" => self.precision = v.parse().ok().filter(|p| (1..=1000).contains(p)).ok_or_else(|| err("1..1000"))?,
+            "fraction" => {
+                let t: &[(&[&str], &str)] = &[(&["auto"], "auto"), (&["decimal", "dec", "off"], "decimal"), (&["fraction", "fractional", "on"], "fraction"), (&["mixed", "combined"], "mixed")];
+                self.fraction = pick(t, "auto, decimal, fraction or mixed")?
+            }
+            "notation" => {
+                let t: &[(&[&str], &str)] = &[(&["auto"], "auto"), (&["normal", "off", "none"], "normal"), (&["sci", "scientific"], "sci"), (&["eng", "engineering"], "eng")];
+                self.notation = pick(t, "auto, normal, sci or eng")?
+            }
+            "base" => self.base = base()?,
+            "input_base" => self.input_base = base()?,
+            "twos_complement" => {
+                let t: &[(&[&str], &str)] = &[(&["on", "yes", "true", "1"], "on"), (&["off", "no", "false", "0"], "off")];
+                self.twos_complement = pick(t, "on or off")? == "on"
+            }
+            _ => {
+                let b = if v == "auto" { Some(0) } else { v.parse().ok().filter(|b| [0, 8, 16, 32, 64, 128].contains(b)) };
+                self.bits = b.ok_or_else(|| err("auto, 8, 16, 32, 64 or 128"))?
+            }
+        }
+        Ok(())
+    }
+
+    /// Value of a key (as `canon` names it) in the form `set` and the ini take.
+    fn get(&self, key: &str) -> String {
+        let base = |b: u32| match b {
+            2 => "bin".into(),
+            8 => "oct".into(),
+            10 => "dec".into(),
+            16 => "hex".into(),
+            b => b.to_string(),
+        };
+        match key {
+            "angle" => self.angle.clone(),
+            "approx" => self.approx.clone(),
+            "precision" => self.precision.to_string(),
+            "fraction" => self.fraction.clone(),
+            "notation" => self.notation.clone(),
+            "base" => base(self.base),
+            "input_base" => base(self.input_base),
+            "twos_complement" => (if self.twos_complement { "on" } else { "off" }).into(),
+            _ if self.bits == 0 => "auto".into(),
+            _ => self.bits.to_string(),
+        }
+    }
+
+    /// The [calc] keys of `path` (missing file or keys = defaults) and warnings for bad values.
+    #[allow(dead_code)] // used by the frontends
+    pub fn load_ini(path: &Path) -> (Options, String) {
+        let mut o = Options::default();
+        let Ok(text) = std::fs::read_to_string(path) else { return (o, String::new()) };
+        let kf = glib::KeyFile::new();
+        if let Err(e) = kf.load_from_data(&text, glib::KeyFileFlags::NONE) {
+            return (o, format!("qcalcp.ini: {e}; default calculator settings\n"));
+        }
+        let mut warn = String::new();
+        for k in KEYS {
+            if let Ok(v) = kf.string("calc", k)
+                && let Err(e) = o.set(k, &v)
+            {
+                warn += &format!("qcalcp.ini: [calc] {e}; using the default\n");
+            }
+        }
+        (o, warn)
+    }
+
+    /// Write these keys into [calc] of `path`, keeping every other key and comment.
+    #[allow(dead_code)] // used by the frontends
+    pub fn save_ini(&self, path: &Path) -> Result<(), String> {
+        let kf = glib::KeyFile::new();
+        match std::fs::read_to_string(path) {
+            // a file we can't parse is the user's; never clobber it
+            Ok(text) => kf.load_from_data(&text, glib::KeyFileFlags::KEEP_COMMENTS).map_err(|e| format!("{}: {e}; not saving calculator settings", path.display()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        }
+        for k in KEYS {
+            kf.set_string("calc", k, &self.get(k));
+        }
+        if let Some(d) = path.parent() {
+            std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+        }
+        kf.save_to_file(path).map_err(|e| e.to_string())
+    }
+}
+
+/// Settings in use (None = defaults, nothing set yet).
+static OPTIONS: Mutex<Option<Options>> = Mutex::new(None);
+
+/// Settings in use.
+pub fn options() -> Options {
+    OPTIONS.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default()
+}
+
+/// Use `o` for every calculation from now on (all frontends share the one calculator).
+#[allow(dead_code)] // used by the frontends
+pub fn set_options(o: &Options) {
+    let _g = lock();
+    apply(o);
+}
+
+/// set_options with the lock held.
+fn apply(o: &Options) {
+    // index in the shim's tables, where 0 is the default
+    let ix = |v: &str, all: &[&str]| all.iter().position(|a| *a == v).unwrap_or(0) as c_int;
+    unsafe {
+        qs_options(
+            ix(&o.angle, &["rad", "deg", "gra"]),
+            ix(&o.approx, &["try", "exact", "approx"]),
+            o.precision as c_int,
+            ix(&o.fraction, &["auto", "decimal", "fraction", "mixed"]),
+            ix(&o.notation, &["auto", "normal", "sci", "eng"]),
+            o.base as c_int,
+            o.input_base as c_int,
+            o.twos_complement as c_int,
+            o.bits as c_int,
+        )
+    };
+    *OPTIONS.lock().unwrap_or_else(|e| e.into_inner()) = Some(o.clone());
+}
+
+/// `set KEY VALUE` (qalc's settings command; KEY may be several words: `set input base hex`) ->
+/// (key, value). None when `expr` isn't one.
+fn set_command(expr: &str) -> Option<(String, String)> {
+    let w: Vec<&str> = expr.split_whitespace().collect();
+    if w.len() < 2 || !w[0].eq_ignore_ascii_case("set") {
+        return None;
+    }
+    let k = (2..w.len()).find(|&k| canon(&w[1..k].join(" ")).is_some()).unwrap_or(2);
+    Some((w[1..k].join(" "), w[k..].join(" ")))
+}
+
+/// Apply a `set KEY VALUE` command (lock held): an Answer like "set angle deg" = "angle = deg".
+fn raw_set_command(expr: &str) -> Option<Result<Answer, String>> {
+    let (key, value) = set_command(expr)?;
+    let mut o = options();
+    Some(o.set(&key, &value).map(|()| {
+        let k = canon(&key).unwrap_or_default();
+        apply(&o);
+        Answer { input: format!("set {k} {value}"), result: format!("{k} = {}", o.get(k)), ..Answer::default() }
+    }))
+}
+
+/// An integer answer in the four programming bases, in this order: ("HEX", "FF"), ("DEC", "255"),
+/// ("OCT", "377"), ("BIN", "1111 1111"); honors twos_complement and bits. None when the answer
+/// isn't a single integer.
+#[allow(dead_code)] // used by the frontends
+pub fn bases(a: &Answer) -> Option<Vec<(&'static str, String)>> {
+    // exact digits: the decimal form is the result or, in another output base, an alternative
+    let dec = a.alts.iter().find(|(l, _)| l == "decimal").map_or(&a.result, |(_, t)| t);
+    let n: i128 = dec.replace('−', "-").parse().ok()?;
+    let o = options();
+    // smallest byte-multiple width that holds n (two's complement for negatives), at least `bits`
+    let fits = |w: u32| if n < 0 { w >= 128 || n >= -(1i128 << (w - 1)) } else { w >= 128 || n < 1i128 << w };
+    let width = [8, 16, 32, 64, 128].into_iter().find(|&w| w >= o.bits && fits(w)).unwrap_or(128);
+    let (sign, u) = if n < 0 && !o.twos_complement { ("-", n.unsigned_abs()) } else { ("", (n as u128) & (u128::MAX >> (128 - width))) };
+    let w = width as usize;
+    let hex = if o.bits > 0 || (n < 0 && o.twos_complement) { format!("{u:0w$X}", w = w / 4) } else { format!("{u:X}") };
+    // BIN padded to the width, in groups of 4 like qalc
+    let bin = format!("{u:0w$b}");
+    let bin = bin.as_bytes().chunks(4).map(String::from_utf8_lossy).collect::<Vec<_>>().join(" ");
+    Some(vec![("HEX", format!("{sign}{hex}")), ("DEC", n.to_string()), ("OCT", format!("{sign}{u:o}")), ("BIN", format!("{sign}{bin}"))])
 }
 
 /// Last value pushed per Octave variable (unchanged ones aren't pushed again, so calculator-side
@@ -156,6 +461,9 @@ fn raw_sample(expr: &str, xvar: &str, yvar: &str, xs: &[f64], ys: &[f64]) -> Res
 /// expression would change anything (assignments, plot, export, command); ans stays as it was.
 #[allow(dead_code)] // used by the calculator views
 pub fn preview(expr: &str) -> Option<String> {
+    if set_command(expr).is_some() {
+        return None;
+    }
     let _g = lock();
     let (a, _) = raw_calc(expr, PREVIEW_MS, PURE).ok()?;
     Some(match a.approx {
@@ -164,10 +472,14 @@ pub fn preview(expr: &str) -> Option<String> {
     })
 }
 
-/// Calculate in math notation; handles qalc's "expr to unit/base/fraction/hex ..." conversions.
+/// Calculate in math notation; handles qalc's "expr to unit/base/fraction/hex ..." conversions
+/// and `set KEY VALUE`.
 #[allow(dead_code)] // API for the calculator views; the GUI/TUI wire it up next
 pub fn calc(expr: &str) -> Result<Answer, String> {
     let _g = lock();
+    if let Some(r) = raw_set_command(expr) {
+        return r;
+    }
     raw_calc(expr, TIMEOUT_MS, SET_ANS).map(|(a, _)| a)
 }
 
@@ -388,7 +700,9 @@ fn plot(interp: &mut Interp, args: &[String]) -> Result<Answer, String> {
             let x = a.free_vars.first().map_or("x", String::as_str);
             let xs = linspace(lo, hi, 501);
             let ys = raw_sample(f, x, "", &xs, &xs)?;
-            (Series::new(Data::Line { x: xs, y: ys }), code.map(|c| format!("fplot(@({x}) {c}, [{lo} {hi}])")))
+            // the source lets zooming out extend the curve
+            let s = Series { source: Some(Source::Qalc { expr: f.to_string(), var: x.to_string() }), ..Series::new(Data::Line { x: xs, y: ys }) };
+            (s, code.map(|c| format!("fplot(@({x}) {c}, [{lo} {hi}])")))
         }
         [x, y] => {
             let n = 50;
@@ -404,11 +718,13 @@ fn plot(interp: &mut Interp, args: &[String]) -> Result<Answer, String> {
     let p = &mut interp.plots;
     if !p.figures.is_empty() && p.axes().hold {
         p.axes().add(Series { label: label.clone(), ..series });
+        p.fig().code.extend(octave.clone());
     } else {
         // each calculator plot gets its own figure, so earlier answers keep theirs
         let id = p.figures.iter().map(|f| f.id).max().unwrap_or(0) + 1;
         p.figures.push(Figure::new(id));
         p.current = p.figures.len() - 1;
+        p.fig().code = octave.iter().cloned().collect();
         let ax = p.axes();
         ax.add(Series { label: label.clone(), ..series });
         ax.title = label.clone();
@@ -428,9 +744,12 @@ fn plot(interp: &mut Interp, args: &[String]) -> Result<Answer, String> {
 
 /// Calculator-mode entry shared by GUI/TUI/CLI: Octave's numeric variables are visible to the
 /// calculator, numeric results land in Octave (`ans`, or the assigned name), and `plot(...)`
-/// draws into `interp.plots`.
+/// draws into `interp.plots`. `set KEY VALUE` changes the settings (persisting them is the frontend's job).
 pub fn eval_into(interp: &mut Interp, expr: &str) -> Result<Answer, String> {
     let mut pushed = lock();
+    if let Some(r) = raw_set_command(expr) {
+        return r;
+    }
     push_vars(&mut pushed, interp);
     if let Some(args) = plot_args(expr) {
         return plot(interp, &args);
@@ -587,8 +906,17 @@ mod tests {
         assert_eq!((ax.title.as_str(), ax.xlabel.as_str()), ("x²", "x"));
         let Data::Line { x, y } = &ax.series[0].data else { panic!() };
         assert_eq!((x[0], y[0], y[250], x.len()), (-2.0, 4.0, 0.0, 501));
+        // zooming out can resample it; the figure records its Octave code
+        assert!(matches!(&ax.series[0].source, Some(Source::Qalc { expr, var }) if expr == "x^2" && var == "x"));
+        assert_eq!(it.plots.figures[0].code, ["fplot(@(x) x.^2, [-2 2])"]);
+        it.eval("hold on").unwrap();
+        eval_into(&mut it, "plot(2x, -1, 1)").unwrap();
+        it.eval("hold off").unwrap();
+        assert_eq!(it.plots.figures[0].code, ["fplot(@(x) x.^2, [-2 2])", "hold on;", "fplot(@(x) 2.*x, [-1 1])", "hold off;"]);
         eval_into(&mut it, "plot(x*y)").unwrap();
-        assert!(matches!(it.plots.figures[1].axes[0].series[0].data, Data::Surface { .. }));
+        let f = &it.plots.figures[1];
+        assert!(matches!(f.axes[0].series[0].data, Data::Surface { .. }) && f.axes[0].series[0].source.is_none());
+        assert_eq!(f.code, ["fsurf(@(x, y) x.*y, [-10 10 -10 10])"]);
         let (_, ys) = sample("diff(x^3, x)", "x", 0.0, 2.0, 3).unwrap();
         assert_eq!(ys, [0.0, 3.0, 12.0]);
     }
@@ -615,7 +943,7 @@ mod tests {
     fn preview_is_fast_and_pure() {
         assert_eq!(preview("1/3 + 1/6").as_deref(), Some("1/2 ≈ 0.5"));
         assert_eq!(preview("3 + 3").as_deref(), Some("6"));
-        for e in ["qt_pv := 7", "qt_pv = 7", "plot(x^2)", "1 + plot(x)", "sin("] {
+        for e in ["qt_pv := 7", "qt_pv = 7", "plot(x^2)", "1 + plot(x)", "sin(", "set angle deg"] {
             assert_eq!(preview(e), None, "{e}");
         }
         let t = std::time::Instant::now();
@@ -639,7 +967,7 @@ mod tests {
         assert_eq!(vis("∫(sin(x)^2, 0, pi)"), "intplot(@(x) sin(x).^2, 0, pi)");
         assert_eq!(vis("integrate(\\t^2, 0, 3)"), "intplot(@(t) t.^2, 0, 3)");
         let both = |x: &str, f: &str, g: &str, lf: &str, lg: &str| {
-            format!("figure; fplot(@({x}) {f}, [-5 5]); hold on; fplot(@({x}) {g}, [-5 5]); hold off; legend('{lf}', '{lg}')")
+            format!("figure; fplot(@({x}) {f}, [-2 2]); hold on; fplot(@({x}) {g}, [-2 2]); hold off; legend('{lf}', '{lg}'); keypoints on")
         };
         assert_eq!(vis("integrate(x^2)"), both("x", "x.^2", "(x.^3)./3", "x²", "x³ / 3 + C"));
         assert_eq!(vis("diff(\\t^3, \\t)"), both("t", "t.^3", "3.*(t.^2)", "t³", "3t²"));
@@ -651,7 +979,9 @@ mod tests {
         assert_eq!(a.visual.as_deref(), Some("eigplot([1, 2; 3, 4])"));
         assert!(a.approx.as_deref() == Some("[5.372281323  −0.3722813233]") && a.octave.is_some(), "{a:?}");
         assert_eq!(vis("[1 2; 3 4]^-1"), "matview([-2, 1; 3./2, -(1./2)])");
-        assert_eq!(vis("x^2 + 1"), "fplot(@(x) x.^2 + 1, [-5 5])");
+        assert_eq!(vis("x^2 + 1"), "fplot(@(x) x.^2 + 1, [-2 2]); keypoints on"); // around the vertex
+        assert_eq!(vis("x^2 - 4x + 3"), "fplot(@(x) x.^2 - (4.*x) + 3, [-1 5]); keypoints on"); // roots 1, 3, vertex 2
+        assert_eq!(vis("sin(x)"), "fplot(@(x) sin(x), [-5 5]); keypoints on"); // not a polynomial: the default range
         assert_eq!(vis("diff(sin(x)*y, x)"), "fsurf(@(x, y) cos(x).*y, [-5 5 -5 5])"); // two unknowns: a surface
         assert!(ok("5 km to mi").visual.is_none() && ok("2 + 2").visual.is_none());
         for e in ["integrate(x^2)", "diff(\\t^3, \\t)", "solve(x^2 = 4)", "[1 2; 3 4]^-1", "∫(sin(x)^2, 0, pi)"] {
@@ -659,11 +989,177 @@ mod tests {
         }
         let mut it = Interp::new();
         assert!(eval_into(&mut it, "plot(x^2)").unwrap().visual.is_none()); // already drawn
-        // the ones built from existing Octave plot functions run
+        // the ones built from existing Octave plot functions run (keypoints is the plot side's)
         for e in ["integrate(x^2)", "diff(\\t^3, \\t)", "solve(x^2 = 4)", "solve(x^2 = -1)", "x^2 + 1", "diff(sin(x)*y, x)"] {
-            it.eval(&vis(e)).unwrap_or_else(|err| panic!("{e}: {err}"));
+            it.eval(vis(e).trim_end_matches("; keypoints on")).unwrap_or_else(|err| panic!("{e}: {err}"));
         }
         assert_eq!(it.plots.figures.len(), 5);
+    }
+
+    #[test]
+    fn extrema_and_key_points() {
+        let a = ok("extrema(x^3 - 3x)");
+        assert_eq!(a.result, "[1  −1]");
+        assert_eq!(a.visual.as_deref(), Some("figure; fplot(@(x) x.^3 - (3.*x), [-4 4]); keypoints on"));
+        let a = ok("inflections(x^4 - x^2)");
+        assert_eq!(a.approx.as_deref(), Some("[0.4082482905  −0.4082482905]"));
+        assert_eq!(a.visual.as_deref(), Some("figure; fplot(@(x) x.^4 - (x.^2), [-3 3]); keypoints on"));
+        let a = ok("extrema(\\t^2 - 2\\t, \\t)");
+        assert_eq!((a.result.as_str(), a.visual.as_deref()), ("1", Some("figure; fplot(@(t) t.^2 - (2.*t), [-2 4]); keypoints on")));
+        let mut it = Interp::new();
+        it.eval(a.visual.unwrap().trim_end_matches("; keypoints on")).unwrap();
+    }
+
+    #[test]
+    fn programming() {
+        for (e, want) in [
+            ("5 & 3", "1"),
+            ("5 | 3", "7"),
+            ("12 xor 10", "6"),
+            ("~5", "−6"),
+            ("1 << 4", "16"),
+            ("256 >> 2", "64"),
+            ("bitcmp(5)", "250"),
+            ("bitrot(1, 1)", "2"),
+            ("17 mod 5", "2"),
+            ("17 // 5", "3"),
+            ("log2(1024)", "10"),
+            ("1 && 0", "0"),
+            ("1 || 0", "1"),
+            ("!0", "1"),
+        ] {
+            assert_eq!(ok(e).result, want, "{e}");
+            assert_eq!(preview(e).as_deref(), Some(want), "{e}");
+        }
+        // bases() reads the global settings: hold the lock so no test changes them meanwhile
+        let _g = lock();
+        let b = |e: &str| bases(&raw_calc(e, TIMEOUT_MS, PLAIN).unwrap().0);
+        let s = |v: &[&str; 4]| Some(["HEX", "DEC", "OCT", "BIN"].into_iter().zip(v.map(String::from)).collect::<Vec<_>>());
+        assert_eq!(b("255"), s(&["FF", "255", "377", "1111 1111"]));
+        assert_eq!(b("-5 to hex"), s(&["FB", "-5", "373", "1111 1011"])); // two's complement
+        assert_eq!(b("2^64 - 1").unwrap()[0].1, "FFFFFFFFFFFFFFFF");
+        for e in ["1/3", "2.5", "5 m", "x", "[1 2]"] {
+            assert_eq!(b(e), None, "{e}");
+        }
+        // other bases stay on offer whatever the result is shown in
+        let a = raw_calc("255 to bin", TIMEOUT_MS, PLAIN).unwrap().0;
+        assert!(["decimal", "hex", "oct"].iter().all(|l| a.alts.iter().any(|(k, _)| k == l)), "{:?}", a.alts);
+    }
+
+    #[test]
+    fn settings() {
+        // settings are global: one lock hold, and the defaults back even if an assert fails
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                apply(&Options::default());
+            }
+        }
+        let _g = lock();
+        let _r = Reset;
+        let run = |e: &str| match raw_set_command(e) {
+            Some(r) => r.unwrap_or_else(|err| panic!("{e}: {err}")),
+            None => raw_calc(e, TIMEOUT_MS, PLAIN).unwrap_or_else(|err| panic!("{e}: {err}")).0,
+        };
+        let a = run("set angle deg");
+        assert_eq!((a.input.as_str(), a.result.as_str(), a.value.is_none(), a.visual.is_none()), ("set angle deg", "angle = deg", true, true));
+        assert_eq!(run("sin(30)").result, "1/2");
+        assert_eq!(run("asin(x)").octave.as_deref(), Some("asind(x)")); // Octave code keeps degrees
+        assert_eq!(run("set angle radians").result, "angle = rad");
+        run("set approx on");
+        assert_eq!(run("sqrt(8)").result, "2.828427125");
+        run("set approx try");
+        run("set fraction mixed");
+        assert_eq!(run("7/3").result, "2 + 1/3");
+        run("set fractions off");
+        assert_eq!(run("1/4").result, "0.25");
+        run("set fraction auto");
+        run("set precision 20");
+        assert_eq!(run("pi").approx.as_deref(), Some("3.1415926535897932385"));
+        run("set prec 10");
+        run("set exp eng");
+        assert_eq!(run("123456.0").result, "123.456E3");
+        run("set notation auto");
+        assert_eq!(run("set input base hex").result, "input_base = hex");
+        assert_eq!(run("FF + 1").result, "256");
+        assert_eq!(run("A & B").result, "10");
+        run("set inbase dec");
+        run("set base hex");
+        let a = run("-1");
+        assert_eq!((a.result.as_str(), run("255").result.as_str()), ("−0x1", "0xFF"));
+        assert!(a.alts.contains(&("decimal".into(), "−1".into())), "{:?}", a.alts);
+        run("set bits 16");
+        assert_eq!(run("-1").result, "0xFFFF"); // two's complement at a fixed width
+        assert_eq!(run("set bits auto").result, "bits = auto");
+        run("set base bin");
+        assert_eq!(run("-1").result, "1111 1111");
+        run("set twos off");
+        assert_eq!(run("-1").result, "−0000 0001");
+        assert_eq!(run("5").result, "0000 0101");
+        run("set bits 16");
+        assert_eq!(run("bitcmp(5)").result, "1111 1111 1111 1010"); // bitcmp's width follows bits
+        assert_eq!(bases(&run("5")).unwrap()[0].1, "0005");
+        assert_eq!(options(), Options { base: 2, twos_complement: false, bits: 16, ..Options::default() });
+        for bad in ["set foo bar", "set angle sideways", "set precision 0", "set base 1", "set bits 12", "set angle"] {
+            assert!(raw_set_command(bad).unwrap().is_err(), "{bad}");
+        }
+        assert!(raw_set_command("set angle sideways").unwrap().unwrap_err().contains("sideways"));
+        assert!(raw_set_command("settle 5").is_none() && raw_set_command("set").is_none());
+    }
+
+    #[test]
+    fn options_ini() {
+        let mut o = Options::default();
+        for (k, v) in [("angle", "degrees"), ("approx", "approximate"), ("precision", "20"), ("fraction", "on"), ("exp", "engineering")] {
+            o.set(k, v).unwrap();
+        }
+        for (k, v) in [("outbase", "hex"), ("input base", "bin"), ("two's", "off"), ("bits", "32")] {
+            o.set(k, v).unwrap();
+        }
+        let want = Options { angle: "deg".into(), approx: "approx".into(), precision: 20, fraction: "fraction".into(), notation: "eng".into(), base: 16, input_base: 2, twos_complement: false, bits: 32 };
+        assert_eq!(o, want);
+        // [calc] round-trips; the user's other keys and comments stay; bad values are named
+        let dir = std::env::temp_dir().join(format!("qcalcp-ini-{}", std::process::id()));
+        let path = dir.join("qcalcp.ini");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, "# mine\n[calc]\n# keep me\nauto_visual=false\nangle=gradians\nbits=7\n").unwrap();
+        let (l, w) = Options::load_ini(&path);
+        assert!(l.angle == "gra" && l.bits == 0 && w.contains("bits") && w.contains("'7'"), "{w}");
+        o.save_ini(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(["# mine", "# keep me", "auto_visual=false", "base=hex", "twos_complement=off"].iter().all(|k| text.contains(k)), "{text}");
+        assert_eq!(Options::load_ini(&path), (want, String::new()));
+        // never clobber a file that doesn't parse
+        std::fs::write(&path, "[calc\nbroken").unwrap();
+        assert!(o.save_ini(&path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[calc\nbroken");
+        assert_eq!(Options::load_ini(&dir.join("missing.ini")), (Options::default(), String::new()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn catalog_entries() {
+        let c = catalog();
+        let get = |n: &str| c.iter().find(|i| i.name == n).unwrap_or_else(|| panic!("{n}"));
+        let i = get("integrate");
+        assert_eq!((i.kind, i.insert.as_str(), i.desc.as_str()), (ItemKind::Function, "integrate(□)", "Integrate"));
+        assert!(i.signature.starts_with("integrate(function, [lower limit], [upper limit], "), "{}", i.signature);
+        assert_eq!(get("integral").insert, "integral(□)"); // alternative names too
+        assert_eq!(get("parallel").insert, "parallel(□, □)");
+        assert_eq!(get("diff").signature, "diff(function, [with respect to], order = 1, [variable value])");
+        assert_eq!((get("eig").signature.as_str(), get("eig").desc.as_str()), ("eig(matrix)", "Eigenvalues"));
+        assert_eq!(get("extrema").signature, "extrema(function, variable = x)");
+        assert!(get("inflections").kind == ItemKind::Function && get("bitcmp").insert == "bitcmp(□)");
+        assert_eq!(get("log_2").insert, "log2(□)"); // completion-only alias inserts the real name
+        let pi = get("pi");
+        assert_eq!((pi.kind, pi.insert.as_str(), pi.desc.as_str()), (ItemKind::Variable, "pi", "Archimedes' Constant (pi) ≈ 3.14159"));
+        assert!(get("speed_of_light").desc.ends_with("≈ 2.99792E8 m/s"));
+        let m = get("meter");
+        assert_eq!((m.kind, m.signature.as_str(), m.desc.as_str()), (ItemKind::Unit, "meter", "Meter (length)"));
+        assert_eq!(get("USD").desc, "U.S. Dollar (currency)");
+        // typeable names only: no π, ∫, plurals or 1-letter names
+        assert!(c.iter().all(|i| i.name.len() >= 2 && i.name.is_ascii()) && !c.iter().any(|i| i.name == "meters" || i.name == "ans"));
+        assert!(c.len() > 1000, "{}", c.len());
     }
 
     #[test]

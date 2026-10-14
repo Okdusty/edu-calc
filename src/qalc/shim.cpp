@@ -24,7 +24,9 @@ static const char US = '\x1f', RS = '\x1e', GS = '\x1d';
 static EvaluationOptions eo;
 static PrintOptions po;
 static KnownVariable *ans_var;
-static MathFunction *eig_fn;
+static MathFunction *eig_fn, *extrema_fn, *inflections_fn;
+// fraction=auto: the qalc-ish choice in qs_calc (fractions unless decimals were typed); else po's format
+static bool frac_auto = true;
 
 static char *dup(const string &s) {
     char *p = (char *)malloc(s.size() + 1);
@@ -62,8 +64,17 @@ static void init() {
     CALCULATOR->setPrecision(10);
     // qalc has no eigenvalue function: roots of the characteristic polynomial, exact when solve manages
     // ponytail: a repeated eigenvalue is listed once (solve lists distinct roots); Octave's eig() counts them
-    eig_fn = CALCULATOR->addFunction(new UserFunction("Matrices", "eigenvalues", "solve(det(\\x - y*identity(\\x)) = 0, y)"));
+    eig_fn = CALCULATOR->addFunction(new UserFunction("Matrices", "eigenvalues", "solve(det(\\x - y*identity(\\x)) = 0, y)", true, 1, "Eigenvalues"));
     eig_fn->addName("eig");
+    eig_fn->setArgumentDefinition(1, new Argument("Matrix", false, false));
+    // x where f'(x) = 0 / f''(x) = 0; the variable defaults to x like diff's
+    extrema_fn = CALCULATOR->addFunction(new UserFunction("Calculus", "extrema", "solve(diff(\\x, \\y) = 0, \\y)", true, 1, "Extrema (where f′ = 0)", "", 2));
+    inflections_fn = CALCULATOR->addFunction(new UserFunction("Calculus", "inflections", "solve(diff(\\x, \\y, 2) = 0, \\y)", true, 1, "Inflection points (where f″ = 0)", "", 2));
+    for (MathFunction *f : {extrema_fn, inflections_fn}) {
+        f->setArgumentDefinition(1, new Argument("Function", false, false));
+        f->setArgumentDefinition(2, new Argument("Variable", false, false));
+        f->setDefaultValue(2, "x");
+    }
     // qalc's defaults (src/qalc.cc load_preferences)
     eo.approximation = APPROXIMATION_TRY_EXACT;
     eo.structuring = STRUCTURING_SIMPLIFY;
@@ -189,6 +200,12 @@ static string ostr(const MathStructure &m, bool &ok) {
         for (size_t i = 0; i < m.size(); i++) args += (i ? ", " : "") + ostr(m[i], ok);
         if (name == "log" && m.size() == 2) return "(log(" + ostr(m[0], ok) + ")./log(" + ostr(m[1], ok) + "))";
         const char *f = name == "log" ? "log" : ofunc(name);
+        // trig in degrees/gradians: Octave's sind & co, or no equivalent
+        static const char *const deg[][2] = {{"sin", "sind"}, {"cos", "cosd"}, {"tan", "tand"}, {"arcsin", "asind"}, {"arccos", "acosd"},
+                                             {"arctan", "atand"}, {"sec", nullptr}, {"csc", nullptr}, {"cot", nullptr}, {"atan2", nullptr}};
+        for (auto &d : deg)
+            if (name == d[0] && eo.parse_options.angle_unit != ANGLE_UNIT_RADIANS)
+                f = eo.parse_options.angle_unit == ANGLE_UNIT_DEGREES ? d[1] : nullptr;
         if (!f) ok = false;
         return string(f ? f : "") + "(" + args + ")";
     }
@@ -368,12 +385,59 @@ static string fmt(double d) {
     return b;
 }
 
-// f and F (its integral or derivative, as Octave code and as shown) on one plot.
+// Real numbers of v (a vector or one value).
+static void reals(const MathStructure &v, vector<double> &out) {
+    for (size_t i = 0; i < (v.isVector() ? v.size() : 1); i++) {
+        const MathStructure &z = v.isVector() ? v[i] : v;
+        if (z.isNumber() && z.number().isReal()) out.push_back(z.number().floatValue());
+    }
+}
+
+// The unknown called x in m, or nullptr.
+static const MathStructure *find_unknown(const MathStructure &m, const string &x) {
+    if (unknown(m) && (m.isSymbolic() ? m.symbol() : m.variable()->referenceName()) == x) return &m;
+    for (size_t i = 0; i < m.size(); i++)
+        if (const MathStructure *u = find_unknown(m[i], x)) return u;
+    return nullptr;
+}
+
+// fplot range for f(x) that shows pts and, for a polynomial, its real roots and critical points
+// (solved numerically); [-5 5] when there is nothing to center on.
+// ponytail: polynomials up to degree 8 (solve's time grows fast past that, inside the answer's
+// time budget); others would need a numeric root search
+static string range(const MathStructure &f, const string &x, vector<double> pts = {}) {
+    const MathStructure *xp = find_unknown(f, x);
+    MathStructure g(f);
+    g.eval(eo);
+    if (xp && g.isRationalPolynomial(true) && g.contains(*xp) && g.degree(*xp).isLessThanOrEqualTo(8)) {
+        MathStructure xv(*xp), d(g);
+        d.differentiate(xv, eo);
+        EvaluationOptions ea = eo;
+        ea.approximation = APPROXIMATION_APPROXIMATE;
+        for (MathStructure *h : {&g, &d}) {
+            MathStructure eq(*h);
+            eq.transform(COMPARISON_EQUALS, m_zero);
+            MathStructure s(CALCULATOR->f_solve, &eq, &xv, NULL);
+            CALCULATOR->beginTemporaryStopMessages(); // "no solution" isn't the user's problem
+            s.eval(ea);
+            CALCULATOR->endTemporaryStopMessages();
+            reals(s, pts);
+        }
+    }
+    pts.erase(std::remove_if(pts.begin(), pts.end(), [](double v) { return !std::isfinite(v); }), pts.end());
+    if (pts.empty()) return "[-5 5]";
+    auto [lo, hi] = std::minmax_element(pts.begin(), pts.end());
+    double pad = std::max(2.0, (*hi - *lo) / 4);
+    return "[" + fmt(std::floor(*lo - pad)) + " " + fmt(std::ceil(*hi + pad)) + "]";
+}
+
+// f and F (its integral or derivative, as Octave code and as shown) on one plot, key points marked.
 static string pair_plot(const string &x, const MathStructure &f, const string &F, const string &shown) {
     string fo = octave(f), h = "fplot(@(" + x + ") ";
     if (x.empty() || fo.empty() || F.empty()) return "";
-    return "figure; " + h + fo + ", [-5 5]); hold on; " + h + F + ", [-5 5]); hold off; legend(" + olabel(show_parsed(f)) + ", " +
-           olabel(shown) + ")";
+    string r = range(f, x);
+    return "figure; " + h + fo + ", " + r + "); hold on; " + h + F + ", " + r + "); hold off; legend(" + olabel(show_parsed(f)) + ", " +
+           olabel(shown) + "); keypoints on";
 }
 
 // Octave code that visualizes the answer, from the parsed input p, exact result m (as Octave
@@ -396,10 +460,7 @@ static string visual(const MathStructure &p, const MathStructure &m, const MathS
         string x = plot_var(g, p.size() >= 2 ? &p[1] : nullptr), go = octave(g);
         if (!x.empty() && !go.empty()) {
             vector<double> r;
-            for (size_t i = 0; i < (ma.isVector() ? ma.size() : 1); i++) {
-                const MathStructure &z = ma.isVector() ? ma[i] : ma;
-                if (z.isNumber() && z.number().isReal()) r.push_back(z.number().floatValue());
-            }
+            reals(ma, r);
             string h = "figure; fplot(@(" + x + ") " + go;
             if (r.empty()) return h + ", [-5 5]); grid on";
             string rs;
@@ -415,10 +476,16 @@ static string visual(const MathStructure &p, const MathStructure &m, const MathS
         for (size_t k = 0; real2 && k < 4; k++) real2 = a[k / 2][k % 2].isNumber() && a[k / 2][k % 2].number().isReal();
         string o = real2 ? octave(a) : "";
         if (!o.empty()) return "eigplot(" + o + ")";
+    } else if (p.isFunction() && (p.function() == extrema_fn || p.function() == inflections_fn) && p.size() >= 1) {
+        // f around the points found, with its key points marked
+        string x = plot_var(p[0], p.size() >= 2 ? &p[1] : nullptr), fo = octave(p[0]);
+        vector<double> r;
+        reals(ma, r);
+        if (!x.empty() && !fo.empty()) return "figure; fplot(@(" + x + ") " + fo + ", " + range(p[0], x, r) + "); keypoints on";
     }
     if (oct.empty()) return "";
     if (m.isMatrix()) return "matview(" + oct + ")";
-    if (fv.size() == 1 && ident(fv[0])) return "fplot(@(" + fv[0] + ") " + oct + ", [-5 5])";
+    if (fv.size() == 1 && ident(fv[0])) return "fplot(@(" + fv[0] + ") " + oct + ", " + range(m, fv[0]) + "); keypoints on";
     if (fv.size() == 2 && ident(fv[0]) && ident(fv[1])) return "fsurf(@(" + fv[0] + ", " + fv[1] + ") " + oct + ", [-5 5 -5 5])";
     return "";
 }
@@ -453,7 +520,7 @@ extern "C" char *qs_calc(const char *expr, int msecs, int mode) {
             // "5 km to mi" is 3.106855961 mi, not 3 mi + 188 yd + ... ("to mixed" still asks for that)
             if (!conv.empty()) e.mixed_units_conversion = MIXED_UNITS_CONVERSION_NONE;
         }
-        bool user_frac = p.number_fraction_format != po.number_fraction_format || p.restrict_fraction_length != po.restrict_fraction_length;
+        bool user_frac = !frac_auto || p.number_fraction_format != po.number_fraction_format || p.restrict_fraction_length != po.restrict_fraction_length;
         // "factor ..." / "expand ..." prefixes, like qalc
         size_t sp = str.find(' ');
         if (sp != string::npos && (str.compare(0, sp, "factor") == 0 || str.compare(0, sp, "factorize") == 0)) {
@@ -498,7 +565,8 @@ extern "C" char *qs_calc(const char *expr, int msecs, int mode) {
         parsed.removeDefaultAngleUnit(e);
 
         // Approximate result of an exact input (sqrt(8) = 2.828...): redo it exactly, like qalc's dual display
-        if (m.isApproximate() && full.find('.') == string::npos && !m.containsType(STRUCT_UNIT) && !parsed.containsType(STRUCT_UNIT)) {
+        if (m.isApproximate() && e.approximation != APPROXIMATION_APPROXIMATE && full.find('.') == string::npos && !m.containsType(STRUCT_UNIT) &&
+            !parsed.containsType(STRUCT_UNIT)) {
             EvaluationOptions ex = e;
             ex.approximation = APPROXIMATION_EXACT;
             ex.expand = -2;
@@ -542,7 +610,7 @@ extern "C" char *qs_calc(const char *expr, int msecs, int mode) {
             bool a = false;
             result = show(m, pr, &a);
             // rounded display of an exact value (2^100, 1/7^20): show it exactly instead
-            if (a && !m.isApproximate() && !units && !user_frac) {
+            if (a && !m.isApproximate() && !units && !user_frac && p.min_exp == EXP_PRECISION) {
                 PrintOptions pf = pr;
                 pf.number_fraction_format = FRACTION_FRACTIONAL;
                 pf.restrict_fraction_length = false;
@@ -621,6 +689,115 @@ extern "C" char *qs_calc(const char *expr, int msecs, int mode) {
         return failed(string("qalculate: ") + x.what());
     } catch (...) {
         return failed("qalculate: internal error");
+    }
+}
+
+// Settings, as Options in mod.rs (0 = the default): angle 0 rad, 1 deg, 2 gra; approx 0 try exact, 1 exact, 2 approximate;
+// fraction 0 auto, 1 decimal, 2 fraction, 3 mixed; notation 0 auto, 1 normal, 2 scientific, 3 engineering;
+// bits 0 = automatic (also what bitcmp/bitrot default to).
+extern "C" void qs_options(int angle, int approx, int precision, int fraction, int notation, int base, int input_base, int twos, int bits) {
+    try {
+        init();
+        static const AngleUnit angles[] = {ANGLE_UNIT_RADIANS, ANGLE_UNIT_DEGREES, ANGLE_UNIT_GRADIANS};
+        static const ApproximationMode approxs[] = {APPROXIMATION_TRY_EXACT, APPROXIMATION_EXACT, APPROXIMATION_APPROXIMATE};
+        static const NumberFractionFormat fracs[] = {FRACTION_DECIMAL, FRACTION_DECIMAL, FRACTION_FRACTIONAL, FRACTION_COMBINED};
+        static const int exps[] = {EXP_PRECISION, EXP_NONE, EXP_SCIENTIFIC, EXP_BASE_3};
+        eo.parse_options.angle_unit = angles[std::clamp(angle, 0, 2)];
+        eo.approximation = approxs[std::clamp(approx, 0, 2)];
+        CALCULATOR->setPrecision(std::clamp(precision, 1, 1000));
+        frac_auto = fraction == 0;
+        po.number_fraction_format = fracs[std::clamp(fraction, 0, 3)];
+        po.min_exp = exps[std::clamp(notation, 0, 3)];
+        po.base = std::clamp(base, 2, 36);
+        eo.parse_options.base = std::clamp(input_base, 2, 36);
+        // hex in two's complement only at a fixed width: without one, 255 would show as 0x00FF
+        po.twos_complement = twos != 0;
+        po.hexadecimal_twos_complement = twos != 0 && bits > 0;
+        po.binary_bits = std::max(bits, 0);
+        for (auto [name, arg] : {std::pair("bitcmp", 2), {"bitrot", 3}})
+            if (MathFunction *f = CALCULATOR->getActiveFunction(name)) f->setDefaultValue(arg, std::to_string(po.binary_bits));
+    } catch (...) {
+    }
+}
+
+// Lowercase first letter, unless the word is an acronym ("Lower limit" -> "lower limit", "XOR" stays).
+static string lower1(string s) {
+    if (s.size() > 1 && isupper((unsigned char)s[0]) && !isupper((unsigned char)s[1])) s[0] = tolower((unsigned char)s[0]);
+    return s;
+}
+
+// First line of s, cut at a space to about 70 bytes.
+static string brief(string s) {
+    s = s.substr(0, s.find('\n'));
+    size_t k = s.size() > 70 ? s.rfind(' ', 69) : string::npos;
+    if (k != string::npos) s = s.substr(0, k) + "…";
+    return s;
+}
+
+// Completion catalog: records (RS) of kind (f/v/u), name, insert, signature, desc (US-separated);
+// one per typeable name of every active, visible function, variable and unit.
+extern "C" char *qs_catalog() {
+    int prec = 0;
+    try {
+        init();
+        string r;
+        // insert = name + ins, signature = name + sig
+        auto add = [&](char kind, ExpressionItem *it, const string &ins, const string &sig, const string &desc) {
+            for (size_t i = 1; i <= it->countNames(); i++) {
+                const ExpressionName &n = it->getName(i);
+                // 1-char names never reach a completer; π, ∫ and plurals are noise there
+                if (n.name.size() < 2 || !ident(n.name) || n.avoid_input || n.plural) continue;
+                string in = n.completion_only ? it->preferredInputName(false, false).name : n.name;
+                r += string(1, kind) + US + n.name + US + in + ins + US + in + sig + US + desc + RS;
+            }
+        };
+        for (MathFunction *f : CALCULATOR->functions) {
+            if (!f->isActive() || f->isHidden()) continue;
+            int req = f->minargs(), n = f->maxargs() < 0 ? std::max((int)f->lastArgumentDefinitionIndex(), req) : f->maxargs();
+            string ins, sig;
+            for (int i = 1; i <= n; i++) {
+                Argument *a = f->getArgumentDefinition(i);
+                string an = a && !a->name().empty() ? lower1(a->name()) : "x" + std::to_string(i), d = f->getDefaultValue(i);
+                if (i <= req) ins += (i > 1 ? ", □" : "□");
+                sig += (i > 1 ? ", " : "") + (i <= req ? an : d.empty() || d == "undefined" ? "[" + an + "]" : an + " = " + d);
+            }
+            if (f->maxargs() < 0) sig += n ? ", …" : "…";
+            add('f', f, "(" + ins + ")", "(" + sig + ")", brief(f->title(false).empty() ? f->description().substr(0, f->description().find(". ")) : f->title(false)));
+        }
+        // values at 6 digits, under a time limit (googolplex ...)
+        prec = CALCULATOR->getPrecision();
+        CALCULATOR->setPrecision(6);
+        EvaluationOptions ea = eo;
+        ea.approximation = APPROXIMATION_APPROXIMATE;
+        ea.auto_post_conversion = POST_CONVERSION_NONE;
+        PrintOptions pv = po;
+        pv.base = BASE_DECIMAL;
+        pv.use_unit_prefixes = false;
+        CALCULATOR->startControl(500);
+        for (Variable *v : CALCULATOR->variables) {
+            if (!v->isActive() || v->isHidden() || v->category() == "Temporary") continue; // ans, pushed Octave values
+            string d = brief(v->title(false));
+            double re, im;
+            if (v->isKnown() && !CALCULATOR->aborted()) {
+                MathStructure x(((KnownVariable *)v)->get());
+                x.eval(ea);
+                if (numval(x, re, im) && !CALCULATOR->aborted()) d += " ≈ " + show(x, pv);
+            }
+            add('v', v, "", "", d);
+        }
+        CALCULATOR->stopControl();
+        CALCULATOR->setPrecision(prec);
+        for (Unit *u : CALCULATOR->units) {
+            if (!u->isActive() || u->isHidden()) continue;
+            string cat = u->category();
+            cat = lower1(cat.substr(cat.rfind('/') + 1)); // npos + 1 = 0: the whole name
+            add('u', u, "", "", brief(u->title(false)) + (cat.empty() ? "" : " (" + cat + ")"));
+        }
+        messages(nullptr);
+        return dup(r);
+    } catch (...) {
+        if (prec) CALCULATOR->setPrecision(prec);
+        return failed("");
     }
 }
 

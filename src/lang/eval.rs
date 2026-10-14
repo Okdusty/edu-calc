@@ -114,7 +114,33 @@ impl Interp {
         for f in prog.funcs {
             self.funcs.insert(f.name.clone(), Rc::new(f));
         }
-        self.exec_block(&prog.body).map(drop)
+        if self.depth > 0 || self.logging {
+            return self.exec_block(&prog.body).map(drop);
+        }
+        self.logging = true;
+        let r = self.exec_logged(&prog.body, src);
+        self.logging = false;
+        r
+    }
+
+    /// Top-level statements; each one that changed the plots is logged, as written, on the
+    /// figure it leaves current (`Figure::code`, what `Figure::octave` rebuilds the figure from).
+    fn exec_logged(&mut self, body: &[Stmt], src: &str) -> Result<(), String> {
+        for s in body {
+            let v = self.plots.version;
+            let flow = self.exec_block(std::slice::from_ref(s))?;
+            let p = &mut self.plots;
+            if p.version != v
+                && p.version != self.unlogged
+                && let (Some(f), Some(text)) = (p.figures.get_mut(p.current), src.get(s.span.0..s.span.1))
+            {
+                f.log(text);
+            }
+            if !matches!(flow, Flow::Next) {
+                break;
+            }
+        }
+        Ok(())
     }
 
     /// `eval(src)`: statements, or an expression when outputs are wanted.

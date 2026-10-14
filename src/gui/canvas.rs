@@ -1,9 +1,12 @@
 //! Plot canvas: cached render of the current figure, touch/mouse pan, zoom and rotate, plus the
 //! data cursor (hover readout, trace mode, pinned data tips) drawn as an overlay.
+//! 2D pans/zooms re-sample function curves over the new view (`plot::resample`, throttled while
+//! the gesture runs, once more at its end); in Octave mode the view it ends on is echoed to the
+//! console and REPL history. Plot-bar tools: key points toggle, the figure's live Octave code.
 use std::cell::{Cell, RefCell};
 use std::f64::consts::{FRAC_PI_2, TAU};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gtk4 as gtk;
 use gtk::prelude::*;
@@ -24,6 +27,18 @@ pub struct Canvas {
     pub area: gtk::DrawingArea,
     /// readout mirror for the plot bar (a finger on the canvas hides the label there)
     pub status: gtk::Label,
+    /// plot-bar buttons owned by the canvas (key points, figure code ...), placed by mod.rs
+    pub tools: gtk::Box,
+    keypts: gtk::ToggleButton,
+    /// live `Figure::octave()` of the current figure
+    code_pop: gtk::Popover,
+    code_view: gtk::TextView,
+    /// last resample during a gesture (throttle), the gesture changed the view, pending wheel settle
+    resampled: Cell<Option<Instant>>,
+    moved: Cell<bool>,
+    wheel: Cell<u32>,
+    /// the last view echoed to the console: its start offset there and the code
+    echo: RefCell<Option<(i32, String)>>,
     cache: RefCell<Option<(Key, cairo::ImageSurface)>>,
     /// where each axes landed in the cached image, in widget pixels
     frames: RefCell<Vec<Frame>>,
@@ -51,6 +66,14 @@ impl Canvas {
         Canvas {
             area: gtk::DrawingArea::builder().hexpand(true).vexpand(true).focusable(true).css_classes(["plot"]).build(),
             status: gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).css_classes(["plot-status", "monospace"]).build(),
+            tools: gtk::Box::builder().spacing(6).build(),
+            keypts: gtk::ToggleButton::builder().icon_name("mark-location-symbolic").tooltip_text("Key points: max / min, roots, y-intercept, inflections, vertex, symmetry").build(),
+            code_pop: gtk::Popover::new(),
+            code_view: gtk::TextView::builder().editable(false).monospace(true).wrap_mode(gtk::WrapMode::WordChar).cursor_visible(false).top_margin(6).bottom_margin(6).left_margin(6).right_margin(6).build(),
+            resampled: Cell::new(None),
+            moved: Cell::new(false),
+            wheel: Cell::new(0),
+            echo: RefCell::new(None),
             cache: RefCell::new(None),
             frames: RefCell::new(vec![]),
             busy: Cell::new(false),
@@ -72,14 +95,10 @@ impl Canvas {
         self.cache.take();
         self.area.queue_draw();
     }
-
-    fn idle(&self) {
-        self.busy.set(false);
-        self.area.queue_draw();
-    }
 }
 
 pub fn attach(ui: &Rc<Ui>) {
+    tools(ui);
     let area = &ui.canvas.area;
     let u = ui.clone();
     area.set_draw_func(move |area, cr, w, h| draw(&u, area, cr, w, h));
@@ -127,7 +146,7 @@ pub fn attach(ui: &Rc<Ui>) {
         });
     });
     let u = ui.clone();
-    drag.connect_drag_end(move |_, _, _| u.canvas.idle());
+    drag.connect_drag_end(move |_, _, _| settle(&u));
 
     // pinch: zoom (+ pan with the fingers' center in 2D)
     let u = ui.clone();
@@ -156,7 +175,7 @@ pub fn attach(ui: &Rc<Ui>) {
         });
     });
     let u = ui.clone();
-    zoom.connect_end(move |_, _| u.canvas.idle());
+    zoom.connect_end(move |_, _| settle(&u));
 
     // two-finger twist: 3D yaw
     let rotate = gtk::GestureRotate::new();
@@ -209,6 +228,15 @@ pub fn attach(ui: &Rc<Ui>) {
                 pan_zoom(fig, fr, (0.0, 0.0), f, (x, y));
             }
             true
+        });
+        // the wheel has no gesture end: settle once it rests
+        let id = u.canvas.wheel.get().wrapping_add(1);
+        u.canvas.wheel.set(id);
+        let u = u.clone();
+        glib::timeout_add_local_once(Duration::from_millis(250), move || {
+            if u.canvas.wheel.get() == id {
+                settle(&u);
+            }
         });
         glib::Propagation::Stop
     });
@@ -309,17 +337,136 @@ fn hit(ui: &Ui, x: f64, y: f64) -> Option<usize> {
     fig.axes_at(x, y, ui.canvas.area.width() as f64, ui.canvas.area.height() as f64)
 }
 
-/// Run `f(figure, axes index, its frame)` on the gesture target; if it reports a change, bump the version and redraw.
+/// Run `f(figure, axes index, its frame)` on the gesture target; if it reports a change, bump the
+/// version and redraw, re-sampling curves at most every 100 ms.
 fn edit(ui: &Ui, f: impl FnOnce(&mut Figure, usize, Option<&Frame>) -> bool) {
-    let Some(i) = ui.canvas.target.get() else { return };
+    let c = &ui.canvas;
+    let Some(i) = c.target.get() else { return };
     let Ok(mut ip) = ui.interp.try_borrow_mut() else { return };
-    let frames = ui.canvas.frames.borrow();
-    let p = &mut ip.plots;
-    let Some(fig) = p.figures.get_mut(p.current) else { return };
-    if i < fig.axes.len() && f(fig, i, frames.iter().find(|f| f.axes == i)) {
-        p.touch();
-        ui.canvas.area.queue_draw();
+    let changed = {
+        let frames = c.frames.borrow();
+        let p = &mut ip.plots;
+        let Some(fig) = p.figures.get_mut(p.current) else { return };
+        i < fig.axes.len() && f(fig, i, frames.iter().find(|f| f.axes == i))
+    };
+    if !changed {
+        return;
     }
+    c.moved.set(true);
+    if c.resampled.get().is_none_or(|t| t.elapsed() >= Duration::from_millis(100)) {
+        c.resampled.set(Some(Instant::now()));
+        crate::plot::resample(&mut ip);
+    }
+    ip.plots.touch();
+    c.area.queue_draw();
+}
+
+/// A gesture ended: full-resolution redraw with a last resample; if the view moved, the code
+/// popover (when open) refreshed and the view echoed to the Octave console.
+fn settle(ui: &Rc<Ui>) {
+    let c = &ui.canvas;
+    c.busy.set(false);
+    if let Ok(mut ip) = ui.interp.try_borrow_mut() {
+        crate::plot::resample(&mut ip);
+    }
+    c.resampled.set(None);
+    c.area.queue_draw();
+    if !c.moved.replace(false) {
+        return;
+    }
+    if c.code_pop.is_visible() {
+        refresh_code(ui);
+    }
+    echo_view(ui);
+}
+
+/// Octave mode: the 2D view a gesture left as one dim console line, `% view: xlim(...); ylim(...);`
+/// (replacing the previous one while nothing came after it, so zooming never spams), and as the
+/// newest REPL history entry so Up recalls it.
+fn echo_view(ui: &Ui) {
+    if ui.cfg.borrow().calc_mode {
+        return;
+    }
+    let line = {
+        let Ok(ip) = ui.interp.try_borrow() else { return };
+        let Some(fig) = ip.plots.figures.get(ip.plots.current) else { return };
+        match ui.canvas.target.get() {
+            Some(i) if fig.axes.get(i).is_some_and(|a| !a.is_3d()) => fig.view_code(i),
+            _ => return,
+        }
+    };
+    if line.is_empty() {
+        return;
+    }
+    let b = ui.console.buffer();
+    let prev = ui.canvas.echo.take();
+    if let Some((start, old)) = &prev {
+        let (mut s, mut e) = (b.iter_at_offset(*start), b.end_iter());
+        if b.text(&s, &e, false) == format!("% view: {old}\n") {
+            b.delete(&mut s, &mut e);
+        }
+    }
+    if b.tag_table().lookup("dim").is_none() {
+        b.create_tag(Some("dim"), &[("foreground", &"#8a8a8a")]);
+    }
+    let mut end = b.end_iter();
+    let start = end.offset();
+    b.insert_with_tags_by_name(&mut end, &format!("% view: {line}\n"), &["dim"]);
+    b.place_cursor(&b.end_iter());
+    ui.console.scroll_mark_onscreen(&b.get_insert());
+    let (h, pos) = &mut *ui.history.borrow_mut();
+    if prev.as_ref().is_some_and(|(_, old)| h.last() == Some(old)) {
+        h.pop();
+    }
+    h.push(line.clone());
+    *pos = h.len();
+    ui.canvas.echo.replace(Some((start, line)));
+}
+
+// ---- plot-bar tools ----
+
+/// Key points toggle (all axes of the current figure) and the figure-code popover (Copy, To Octave).
+fn tools(ui: &Rc<Ui>) {
+    let c = &ui.canvas;
+    let u = ui.clone();
+    c.keypts.connect_clicked(move |b| {
+        let on = b.is_active();
+        for_all_axes(&u, |a| a.keypoints = on);
+    });
+    let copy = gtk::Button::builder().label("Copy").tooltip_text("Copy the code").build();
+    let send = gtk::Button::builder().label("To Octave").tooltip_text("Put the code into the REPL (or the script, if it was used last)").build();
+    let u = ui.clone();
+    copy.connect_clicked(move |b| b.clipboard().set_text(&code_text(&u)));
+    let u = ui.clone();
+    send.connect_clicked(move |_| {
+        let code = code_text(&u);
+        u.canvas.code_pop.popdown();
+        super::send_to_octave(&u, &code);
+    });
+    let u = ui.clone();
+    c.code_pop.connect_show(move |_| refresh_code(&u));
+    let row = gtk::Box::builder().spacing(6).halign(gtk::Align::End).build();
+    row.append(&copy);
+    row.append(&send);
+    let col = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).build();
+    col.append(&gtk::ScrolledWindow::builder().child(&c.code_view).min_content_width(420).min_content_height(40).max_content_height(360).propagate_natural_height(true).build());
+    col.append(&row);
+    c.code_pop.set_child(Some(&col));
+    let code = gtk::MenuButton::builder().icon_name("text-x-generic-symbolic").tooltip_text("Octave code of this figure, following pans and zooms").popover(&c.code_pop).build();
+    c.tools.append(&c.keypts);
+    c.tools.append(&code);
+}
+
+/// Current figure's `octave()` into the popover.
+fn refresh_code(ui: &Ui) {
+    let code = ui.interp.try_borrow().ok().and_then(|ip| Some(ip.plots.figures.get(ip.plots.current)?.octave())).unwrap_or_default();
+    let text = if code.is_empty() { "% no Octave code recorded for this figure".to_string() } else { code };
+    ui.canvas.code_view.buffer().set_text(&text);
+}
+
+fn code_text(ui: &Ui) -> String {
+    let b = ui.canvas.code_view.buffer();
+    b.text(&b.start_iter(), &b.end_iter(), false).to_string()
 }
 
 // ---- data cursor ----
@@ -411,6 +558,7 @@ fn draw(ui: &Ui, area: &gtk::DrawingArea, cr: &cairo::Context, w: i32, h: i32) {
             c.hit.set(None);
             c.status.set_text("");
         }
+        c.keypts.set_active(fig.axes.iter().any(|a| a.keypoints));
         match surface(fig, theme, w, h, scale) {
             Ok((s, frames)) => {
                 *cache = Some((key, s));

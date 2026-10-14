@@ -9,6 +9,7 @@ use plotters::coord::types::RangedCoordf64;
 use plotters::prelude::*;
 use plotters::style::text_anchor::{HPos, Pos, VPos};
 
+use super::analysis::{self, Symmetry};
 use super::{Axes, Data, Figure, LineStyle, Marker, Rgb, Series, Theme, cursor, mathtext};
 use crate::value::Matrix;
 
@@ -416,6 +417,9 @@ where
         for (i, s) in a.series.iter().enumerate() {
             self.series2d(i, s, &sx, &sy, plot, &mut occupied)?;
         }
+        if a.keypoints {
+            self.keypoints(a, &sx, &sy, plot, &mut occupied)?;
+        }
         self.notes(a, plot, |p| (sx.px(p[0]), sy.px(p[1])), &mut occupied)?;
         let axis = self.mix(0.6);
         self.outline(plot, axis)?;
@@ -548,6 +552,134 @@ where
             Data::Line3 { .. } | Data::Surface { .. } => {} // 3D axes only
         }
         Ok(())
+    }
+
+    /// Key points of the line series (`keypoints on`), in each series' color: a marker per point
+    /// (shape by kind, the vertex emphasized; one per spot), labels like "max (1.2, 3.4)" that dodge
+    /// each other, the markers and the plot edges (a label that fits nowhere is dropped, its marker
+    /// stays), a dashed mirror axis "x = h", and corner notes for even / odd / point symmetry.
+    fn keypoints(&self, a: &Axes, sx: &Scale, sy: &Scale, plot: Rect, occ: &mut Vec<Pt>) -> Res {
+        let num = |v: f64| cursor::num(v).replace('-', "\u{2212}");
+        // (pixel, kind, label, color, label below the point first)
+        let mut pts: Vec<(Pt, Kp, String, Rgb, bool)> = vec![];
+        let (mut axes, mut notes) = (vec![], vec![]);
+        for (i, s) in a.series.iter().enumerate() {
+            let Data::Line { x, y } = &s.data else { continue };
+            let Some(k) = analysis::analyze(x, y) else { continue };
+            let c = self.color(i, s);
+            let low = k.vertex.is_some_and(|v| k.min.contains(&v));
+            let kinds = [(Kp::Vertex, "vertex", k.vertex.as_slice(), low), (Kp::Max, "max", &k.max, false), (Kp::Min, "min", &k.min, true)];
+            let more = [(Kp::Root, "root", &k.roots[..], true), (Kp::YInt, "y-int", k.y_int.as_slice(), false), (Kp::Infl, "inflection", &k.inflection, false)];
+            for (kind, name, ps, below) in kinds.into_iter().chain(more) {
+                for p in ps {
+                    let q = (sx.px(p[0]), sy.px(p[1]));
+                    // one marker per spot: the vertex beats its min, a root at the origin its intercept
+                    if plot.contains(q) && !pts.iter().any(|(o, ..)| (o.0 - q.0).abs() < 2.0 * self.k && (o.1 - q.1).abs() < 2.0 * self.k) {
+                        pts.push((q, kind, format!("{name} ({}, {})", num(p[0]), num(p[1])), c, below));
+                    }
+                }
+            }
+            match k.symmetry {
+                Symmetry::Axis(h) if plot.contains((sx.px(h), plot.y0)) => axes.push((sx.px(h), format!("x = {}", num(h)), c)),
+                Symmetry::Even => notes.push(("even: f(\u{2212}x) = f(x)".to_string(), c)),
+                Symmetry::Odd => notes.push(("odd: f(\u{2212}x) = \u{2212}f(x)".to_string(), c)),
+                Symmetry::Point(h, v) => notes.push((format!("symmetric about ({}, {})", num(h), num(v)), c)),
+                _ => {}
+            }
+        }
+        // extrema of every series first; ponytail: fixed caps (60 markers, 12 labels), so a dense
+        // curve (sin over 100 periods) shows its first ones
+        pts.sort_by_key(|p| p.1 as u8);
+        pts.truncate(60);
+        for &(x, _, c) in &axes {
+            self.stroke(&[(x, plot.y0), (x, plot.y1)], c, self.hair(), LineStyle::Dashed)?;
+        }
+        for (q, kind, _, c, _) in &pts {
+            self.kp_marker(*q, *kind, *c)?;
+        }
+        if self.tiny {
+            return Ok(());
+        }
+        let font = self.font(0.8, self.theme.fg);
+        let (pad, lh, gap) = (0.3 * self.fs, 1.05 * self.fs, 0.6 * self.fs);
+        let area = Rect { x0: plot.x0 + self.u, y0: plot.y0 + self.u, x1: plot.x1 - self.u, y1: plot.y1 - self.u };
+        let r = 6.0 * self.k;
+        let mut taken: Vec<Rect> = pts.iter().map(|((x, y), ..)| Rect::new((x - r, y - r), (x + r, y + r))).collect();
+        // corner notes top left, stacked
+        let mut y = area.y0 + 0.3 * self.fs;
+        for (text, c) in &notes {
+            let w = self.text_w(text, &font) + 2.0 * pad;
+            let b = Rect { x0: area.x0 + 0.3 * self.fs, y0: y, x1: area.x0 + 0.3 * self.fs + w, y1: y + lh }.round();
+            if !b.inside(&area) {
+                break;
+            }
+            self.fill(b, self.theme.bg, 0.85)?;
+            self.text(text, (b.x0 + pad, (b.y0 + b.y1) / 2.0), &self.font(0.8, *c), HPos::Left, VPos::Center);
+            occ.extend([(b.x0, b.y0), (b.x1, b.y0), (b.x0, b.y1), (b.x1, b.y1)]);
+            taken.push(b);
+            y = b.y1 + 0.2 * self.fs;
+        }
+        // a label box at the first candidate spot that is free and inside the plot
+        let mut place = |text: &str, cands: &[(f64, f64)], taken: &mut Vec<Rect>| -> Res<bool> {
+            let w = self.text_w(text, &font) + 2.0 * pad;
+            let Some(b) = cands.iter().map(|&(x, y)| Rect { x0: x, y0: y, x1: x + w, y1: y + lh }.round()).find(|b| b.inside(&area) && !taken.iter().any(|t| t.overlaps(b))) else {
+                return Ok(false);
+            };
+            self.fill(b, self.theme.bg, 0.85)?;
+            self.text(text, (b.x0 + pad, (b.y0 + b.y1) / 2.0), &font, HPos::Left, VPos::Center);
+            occ.extend([(b.x0, b.y0), (b.x1, b.y0), (b.x0, b.y1), (b.x1, b.y1), ((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0)]);
+            taken.push(b);
+            Ok(true)
+        };
+        // the mirror axes' labels at the top, then the points'
+        for (x, text, _) in &axes {
+            let w = self.text_w(text, &font) + 2.0 * pad;
+            let top = area.y0 + 0.3 * self.fs;
+            place(text, &[(x + 0.3 * self.fs, top), (x - 0.3 * self.fs - w, top), (x + 0.3 * self.fs, area.y1 - lh - 0.3 * self.fs)], &mut taken)?;
+        }
+        let mut shown = 0;
+        for ((x, y), _, text, _, below) in &pts {
+            if shown == 12 {
+                break;
+            }
+            let w = self.text_w(text, &font) + 2.0 * pad;
+            let (up, dn, mid) = (y - gap - lh, y + gap, y - lh / 2.0);
+            let (l, c, rt) = (x - gap - w, x - w / 2.0, x + gap);
+            let (first, second) = if *below { (dn, up) } else { (up, dn) };
+            let cands = [(c, first), (rt, first), (l, first), (rt, mid), (l, mid), (c, second), (rt, second), (l, second)];
+            shown += place(text, &cands, &mut taken)? as usize;
+        }
+        Ok(())
+    }
+
+    /// Key point marker with a background halo: ▲ max, ▼ min, ○ root, ◇ inflection, □ y-intercept,
+    /// a big ringed dot for the vertex.
+    fn kp_marker(&self, (x, y): Pt, kind: Kp, c: Rgb) -> Res {
+        let (r, halo, bg) = (3.5 * self.k, 1.5 * self.k, self.theme.bg);
+        let lw = (1.5 * self.k).round().max(1.0) as u32;
+        if matches!(kind, Kp::Root | Kp::Vertex) {
+            let rr = if kind == Kp::Vertex { 1.6 * r } else { r };
+            self.root.draw(&Circle::new(ipt((x, y)), rr + halo, fill(bg, 1.0)))?;
+            if kind == Kp::Vertex {
+                self.root.draw(&Circle::new(ipt((x, y)), rr, fill(c, 1.0)))?;
+                return Ok(self.root.draw(&Circle::new(ipt((x, y)), rr * 0.45, fill(bg, 1.0)))?);
+            }
+            return Ok(self.root.draw(&Circle::new(ipt((x, y)), rr, stroke(c, 1.0, lw)))?);
+        }
+        let shape: &[Pt] = match kind {
+            Kp::Max => &[(0.0, -1.3), (1.15, 0.7), (-1.15, 0.7)],
+            Kp::Min => &[(0.0, 1.3), (1.15, -0.7), (-1.15, -0.7)],
+            Kp::Infl => &[(0.0, -1.35), (1.1, 0.0), (0.0, 1.35), (-1.1, 0.0)],
+            _ => &[(-0.95, -0.95), (0.95, -0.95), (0.95, 0.95), (-0.95, 0.95)],
+        };
+        let at = |s: f64| shape.iter().map(|&(dx, dy)| ipt((x + dx * s, y + dy * s))).collect::<Vec<_>>();
+        self.root.draw(&Polygon::new(at(r + 1.6 * halo), fill(bg, 1.0)))?;
+        if matches!(kind, Kp::Max | Kp::Min) {
+            return Ok(self.root.draw(&Polygon::new(at(r), fill(c, 1.0)))?);
+        }
+        let mut ring = at(r);
+        ring.push(ring[0]);
+        Ok(self.root.draw(&PathElement::new(ring, stroke(c, 1.0, lw)))?)
     }
 
     /// Legend box in the plot corner covering the fewest data points (matplotlib "best").
@@ -864,6 +996,17 @@ where
     }
 }
 
+/// Key point kinds, in marker priority order.
+#[derive(Clone, Copy, PartialEq)]
+enum Kp {
+    Vertex,
+    Max,
+    Min,
+    Root,
+    YInt,
+    Infl,
+}
+
 enum Prim {
     Quad([Pt; 4], Rgb, (Rgb, f64)),
     Seg(Pt, Pt, Rgb, u32),
@@ -915,6 +1058,12 @@ impl Rect {
     }
     fn contains(&self, p: Pt) -> bool {
         p.0 >= self.x0 && p.0 <= self.x1 && p.1 >= self.y0 && p.1 <= self.y1
+    }
+    fn overlaps(&self, o: &Rect) -> bool {
+        self.x0 < o.x1 && o.x0 < self.x1 && self.y0 < o.y1 && o.y0 < self.y1
+    }
+    fn inside(&self, o: &Rect) -> bool {
+        self.x0 >= o.x0 && self.x1 <= o.x1 && self.y0 >= o.y0 && self.y1 <= o.y1
     }
     fn clip(&self, o: &Rect) -> Option<Rect> {
         let r = Rect { x0: self.x0.max(o.x0), y0: self.y0.max(o.y0), x1: self.x1.min(o.x1), y1: self.y1.min(o.y1) };
@@ -1366,6 +1515,16 @@ mod tests {
         let mut f = figure(vec![Series::new(Data::Surface { x, y, z: Matrix::filled(3, 3, f64::NAN), wire: false })]);
         f.axes[0].view = View { yaw: 0.0, pitch: std::f64::consts::FRAC_PI_2, zoom: 0.0 };
         figs.push(f);
+        // key points on everything, plus curves that exercise them
+        let x: Vec<f64> = (0..400).map(|i| -4.0 + i as f64 * 0.02).collect();
+        figs.push(figure(vec![
+            Series::new(Data::Line { x: x.clone(), y: x.iter().map(|v| v.tan()).collect() }),
+            Series::new(Data::Line { x: x.clone(), y: x.iter().map(|v| v * v - 1.0).collect() }),
+            Series::new(Data::Line { x: x.clone(), y: vec![f64::NAN; 400] }),
+        ]));
+        for a in figs.iter_mut().flat_map(|f| &mut f.axes) {
+            a.keypoints = true;
+        }
         for f in &figs {
             for (w, h) in [(0, 0), (1, 1), (37, 23), (640, 480)] {
                 assert_eq!(render_rgb(f, &Theme::dark(), w, h).unwrap().len(), w as usize * h as usize * 3);

@@ -1,5 +1,6 @@
-//! On-screen keypad: pages from keypad.ini (DEFAULT_KEYPAD when missing or bad), and the □
-//! placeholder logic shared by the keypad and the calculator entry.
+//! On-screen keypad: one mode's keys (General, Programming, Algebra, Custom pages) and the number
+//! pad, from keypad.ini (DEFAULT_KEYPAD when missing or bad, or still the previous version's
+//! default), and the □ placeholder logic shared by the keypad and the calculator entry.
 use std::rc::Rc;
 
 use gtk4 as gtk;
@@ -10,6 +11,73 @@ use gtk::prelude::*;
 pub const SLOT: char = '□';
 
 pub const DEFAULT_KEYPAD: &str = "\
+# qcalcp on-screen keypad. Delete this file to get the defaults back.
+# Modes (keypad menu in the header): [General] [Programming] [Algebra] [Custom], with the
+# [Number pad] beside them. Every group with another name is one more Custom page (a switcher shows
+# when there are several). A missing General / Programming / Algebra / Number pad uses the built-in one.
+#   columns=N                 buttons per row (1-12)
+#   keys=label|template;...   keys in rows of N; an empty key leaves a gap; write \\; for a literal ;
+# template: the text inserted. A bare label inserts the label itself. □ marks a slot: a selection is
+#   wrapped into the first one and the next one gets selected (Tab / Shift+Tab move between them).
+# actions: @back @clear @left @right @enter (evaluate) @ans
+#          @base:N  type numbers and show results in base N (2, 8, 10, 16); A-F need 16
+# Templates are calculator (libqalculate) syntax; in Octave mode × ÷ − π √ ∛ ² ³ become ASCII.
+# A bad entry makes qcalcp use these defaults and say why in the console.
+# style.css: .keypad  .keypad button  .keypad .op (operators, actions)  .keypad .fn (functions)
+#            .keypad .general (group name, lowercase, - for other chars: .number-pad)
+
+[General]
+columns=5
+keys=sin|sin(□);cos|cos(□);tan|tan(□);π;e;\
+asin|asin(□);acos|acos(□);atan|atan(□);i;!;\
+ln|ln(□);log₁₀|log10(□);√□|√(□);∛□|∛(□);abs|abs(□);\
+□²|□²;□^□|□^□;1/□|1/□;EE|E;%;\
+x;y;to| to ;mod| mod ;=
+
+[Programming]
+columns=6
+keys=BIN|@base:2;OCT|@base:8;DEC|@base:10;HEX|@base:16;<<;>>;\
+A;B;C;D;E;F;\
+AND|&;OR||;XOR| xor ;NOT|~;cmp|bitcmp(□);rot|bitrot(□, □);\
+&&;‖|||;!;mod| mod ;div|//;log₂|log2(□)
+
+[Algebra]
+columns=5
+keys=d/dx|diff(□, x);∫ dx|integrate(□, , , x);∫ₐᵇ|integrate(□, □, □, x);Σ|sum(□, □, □, n);lim|limit(□, □, x);\
+solve|solve(□ = □, x);extrema|extrema(□);plot|plot(□, □, □);∞;=;\
+2×2|[□ □\\; □ □];3×3|[□ □ □\\; □ □ □\\; □ □ □];det|det(□);A⁻¹|inverse(□);Aᵀ|transpose(□);\
+rank|rk(□);[;];\\;;x
+
+[Custom]
+columns=6
+keys=to| to ;→ a/b| to fraction;→ hex| to hex;→ bin| to bin;→ oct| to oct;°;\
+m;km;mi;ft;in;kg;\
+lb;s;min;h;°C;°F;\
+K;J;W;V;A;Ω;\
+Hz;Pa;bar;L;N;eV
+
+[Greek]
+columns=7
+keys=α;β;γ;δ;ε;θ;λ;\
+μ;π;σ;τ;φ;ω;Δ;\
+x;y;z;a;b;c;n;\
+t;:=| := ;=;,;␣| ;←|@left;→|@right
+
+[Number pad]
+columns=5
+keys=AC|@clear;(;);^;⌫|@back;\
+7;8;9;÷;←|@left;\
+4;5;6;×;→|@right;\
+1;2;3;−;ans|@ans;\
+0;.;,;+;=|@enter
+";
+
+/// Keypad modes (qcalcp.ini keypad_mode, keypad menu) and their keypad.ini group; "custom" takes
+/// every group that isn't another mode's. "numpad" is the number pad alone.
+pub const MODES: [(&str, &str); 5] = [("general", "General"), ("programming", "Programming"), ("algebra", "Algebra"), ("custom", "Custom"), ("numpad", "Number pad")];
+
+/// The previous version's default keypad.ini: a file still equal to it is replaced by DEFAULT_KEYPAD.
+const OLD_DEFAULT: &str = "\
 # qcalcp on-screen keypad. Delete this file to get the defaults back.
 # One [group] per page, in display order:
 #   columns=N                 buttons per row (1-12)
@@ -73,9 +141,11 @@ pub enum Act {
     Left,
     Right,
     Enter,
+    /// @base:N: input and result base (handled by the GUI, not the text widget)
+    Base(u32),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Page {
     pub name: String,
     pub columns: usize,
@@ -119,6 +189,7 @@ fn key(item: &str) -> Result<Option<(String, Act)>, String> {
         "@right" => Act::Right,
         "@enter" => Act::Enter,
         "@ans" => Act::Insert("ans".into()),
+        a if a.starts_with("@base:") => Act::Base(a[6..].parse().ok().filter(|b| (2..=36).contains(b)).ok_or(format!("'{item}': want @base:2 .. @base:36"))?),
         a if a.starts_with('@') => return Err(format!("'{item}': unknown action {a}")),
         _ if tpl.is_empty() => return Err(format!("'{item}': empty template")),
         _ => Act::Insert(tpl.to_string()), // untrimmed: " to " and a space key need their spaces
@@ -129,10 +200,15 @@ fn key(item: &str) -> Result<Option<(String, Act)>, String> {
     Ok(Some((label.to_string(), act)))
 }
 
-/// Pages from `path`, writing the defaults there on first run; warnings for the console.
+/// Pages from `path`, writing the defaults there on first run (and over the previous version's
+/// untouched defaults); warnings for the console.
 pub fn load(path: &std::path::Path) -> (Vec<Page>, String) {
     let defaults = || parse(DEFAULT_KEYPAD).unwrap_or_default();
     match std::fs::read_to_string(path) {
+        Ok(t) if t.trim() == OLD_DEFAULT.trim() => {
+            let w = std::fs::write(path, DEFAULT_KEYPAD).err().map_or(String::new(), |e| format!("{}: {e}\n", path.display()));
+            (defaults(), w)
+        }
         Ok(t) => match parse(&t) {
             Ok(p) => (p, String::new()),
             Err(e) => (defaults(), format!("{}: {e}; using the default keypad\n", path.display())),
@@ -202,37 +278,131 @@ fn class(act: &Act) -> Option<&'static str> {
     }
 }
 
-/// Keypad widget: page switcher over a stack of button grids; `press` gets each key's action.
-pub fn widget(pages: &[Page], press: impl Fn(&Act) + 'static) -> gtk::Box {
-    let press = Rc::new(press);
-    let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::SlideLeftRight).build();
-    for p in pages {
-        let grid = gtk::Grid::builder().row_homogeneous(true).column_homogeneous(true).row_spacing(4).column_spacing(4).build();
-        grid.add_css_class(&p.name.to_lowercase().replace(|c: char| !c.is_alphanumeric(), "-"));
-        for (i, k) in p.keys.iter().enumerate() {
-            let Some((label, act)) = k else { continue };
-            // focus stays in the text widget, so its selection and cursor survive the tap
-            let b = gtk::Button::builder().label(label).focus_on_click(false).hexpand(true).vexpand(true).build();
-            if let Some(c) = class(act) {
-                b.add_css_class(c);
+/// Each mode's pages, in MODES order: the group named like the mode (the default file's when
+/// missing); Custom gets every group that isn't another mode's (the default Custom pages when none).
+pub fn arrange(pages: &[Page]) -> Vec<Vec<Page>> {
+    let def = parse(DEFAULT_KEYPAD).unwrap_or_default();
+    let named = |p: &Page| MODES.iter().any(|&(m, g)| m != "custom" && g == p.name);
+    let block = |ps: &[Page], mode: &str, group: &str| -> Vec<Page> {
+        ps.iter().filter(|p| if mode == "custom" { !named(p) } else { p.name == group }).cloned().collect()
+    };
+    MODES.iter().map(|&(m, g)| Some(block(pages, m, g)).filter(|b| !b.is_empty()).unwrap_or_else(|| block(&def, m, g))).collect()
+}
+
+/// On-screen keypad: one mode block at a time (stack) and the number pad beside or below it.
+pub struct Keypad {
+    pub root: gtk::Box,
+    modes: gtk::Stack,
+    numpad: gtk::Box,
+    keys: Vec<(gtk::Button, Act)>,
+    /// A-F of the Programming block, usable with hexadecimal input
+    hex: Vec<gtk::Button>,
+}
+
+impl Keypad {
+    pub fn new(pages: &[Page]) -> Keypad {
+        let (mut keys, mut hex) = (vec![], vec![]);
+        let modes = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).build();
+        let numpad = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        for (&(mode, _), pages) in MODES.iter().zip(arrange(pages)) {
+            let first = keys.len();
+            let w = block(&pages, &mut keys);
+            if mode == "programming" {
+                let digit = |a: &Act| matches!(a, Act::Insert(t) if matches!(t.as_str(), "A" | "B" | "C" | "D" | "E" | "F"));
+                hex = keys[first..].iter().filter(|(_, a)| digit(a)).map(|(b, _)| b.clone()).collect();
             }
-            match act {
-                Act::Enter => b.add_css_class("suggested-action"),
-                Act::Clear => b.add_css_class("destructive-action"),
-                _ => {}
+            if mode == "numpad" {
+                numpad.append(&w);
+            } else {
+                modes.add_named(&w, Some(mode));
             }
+        }
+        // hexpand(false): the buttons' hexpand would take the calculator's width when beside it
+        let root = gtk::Box::builder().spacing(8).hexpand(false).css_classes(["keypad"]).build();
+        root.append(&modes);
+        root.append(&numpad);
+        Keypad { root, modes, numpad, keys, hex }
+    }
+
+    /// `press` gets each key's action.
+    pub fn connect(&self, press: impl Fn(&Act) + 'static) {
+        let press = Rc::new(press);
+        for (b, act) in &self.keys {
             let (press, act) = (press.clone(), act.clone());
             b.connect_clicked(move |_| press(&act));
-            grid.attach(&b, (i % p.columns) as i32, (i / p.columns) as i32, 1, 1);
         }
-        stack.add_titled(&grid, None, &p.name);
+    }
+
+    /// `mode`'s block ("numpad": the number pad alone), plus the number pad when `numpad`.
+    pub fn show(&self, mode: &str, numpad: bool, side_by_side: bool) {
+        self.modes.set_visible(mode != "numpad");
+        if self.modes.child_by_name(mode).is_some() {
+            self.modes.set_visible_child_name(mode);
+        }
+        self.numpad.set_visible(numpad || mode == "numpad");
+        self.root.set_orientation(if side_by_side { gtk::Orientation::Horizontal } else { gtk::Orientation::Vertical });
+    }
+
+    /// Width the mode's keys and the number pad need side by side.
+    pub fn side_by_side_width(&self) -> i32 {
+        let min = |w: &gtk::Widget| w.measure(gtk::Orientation::Horizontal, -1).0;
+        min(self.modes.upcast_ref()) + self.root.spacing() + min(self.numpad.upcast_ref())
+    }
+
+    /// Check the @base key of the input base; A-F only for hexadecimal input.
+    pub fn set_base(&self, base: u32) {
+        for (b, act) in &self.keys {
+            if let (Act::Base(n), Some(t)) = (act, b.downcast_ref::<gtk::ToggleButton>()) {
+                t.set_active(*n == base);
+            }
+        }
+        self.hex.iter().for_each(|b| b.set_sensitive(base >= 16));
+    }
+}
+
+/// A mode block: its page's grid, or a page switcher over a stack of grids.
+fn block(pages: &[Page], keys: &mut Vec<(gtk::Button, Act)>) -> gtk::Widget {
+    if let [p] = pages {
+        return grid(p, keys).upcast();
+    }
+    let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::SlideLeftRight).build();
+    for p in pages {
+        stack.add_titled(&grid(p, keys), None, &p.name);
     }
     let switcher = gtk::StackSwitcher::builder().stack(&stack).halign(gtk::Align::Center).build();
     let top = gtk::ScrolledWindow::builder().child(&switcher).vscrollbar_policy(gtk::PolicyType::Never).propagate_natural_height(true).build();
-    let b = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(4).css_classes(["keypad"]).build();
+    let b = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(4).build();
     b.append(&top);
     b.append(&stack);
-    b
+    b.upcast()
+}
+
+/// A page's buttons; @base keys are toggles showing the active base.
+fn grid(p: &Page, keys: &mut Vec<(gtk::Button, Act)>) -> gtk::Grid {
+    let grid = gtk::Grid::builder().row_homogeneous(true).column_homogeneous(true).row_spacing(4).column_spacing(4).build();
+    grid.add_css_class(&p.name.to_lowercase().replace(|c: char| !c.is_alphanumeric(), "-"));
+    for (i, k) in p.keys.iter().enumerate() {
+        let Some((label, act)) = k else { continue };
+        let b: gtk::Button = match act {
+            Act::Base(_) => gtk::ToggleButton::with_label(label).upcast(),
+            _ => gtk::Button::with_label(label),
+        };
+        // focus stays in the text widget, so its selection and cursor survive the tap
+        b.set_focus_on_click(false);
+        b.set_hexpand(true);
+        b.set_vexpand(true);
+        if let Some(c) = class(act) {
+            b.add_css_class(c);
+        }
+        match act {
+            Act::Enter => b.add_css_class("suggested-action"),
+            Act::Clear => b.add_css_class("destructive-action"),
+            _ => {}
+        }
+        grid.attach(&b, (i % p.columns) as i32, (i / p.columns) as i32, 1, 1);
+        keys.push((b, act.clone()));
+    }
+    grid
 }
 
 /// A text widget the keypad types into. `octave`: REPL entry or script (ASCII operators).
@@ -264,6 +434,7 @@ pub fn press(t: Target, act: &Act) {
                 Act::Left => e.set_position((pos - 1).max(0)),
                 Act::Right => e.set_position((pos + 1).min(e.text().chars().count() as i32)),
                 Act::Enter => e.emit_activate(),
+                Act::Base(_) => {}
             }
         }
         Target::Text(v) => {
@@ -301,6 +472,7 @@ pub fn press(t: Target, act: &Act) {
                     buf.delete_selection(true, true);
                     buf.insert_at_cursor("\n");
                 }
+                Act::Base(_) => {}
             }
             v.scroll_mark_onscreen(&buf.get_insert());
         }
@@ -346,24 +518,54 @@ mod tests {
     fn keypad_file() {
         let pages = parse(DEFAULT_KEYPAD).unwrap();
         let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["Basic", "Scientific", "Calculus", "Matrix", "Convert", "Letters"]);
-        let find = |p: usize, l: &str| pages[p].keys.iter().flatten().find(|(k, _)| k == l).map(|(_, a)| a.clone());
-        assert_eq!(find(0, "7"), Some(Act::Insert("7".into())));
-        assert_eq!(find(0, "⌫"), Some(Act::Back));
-        assert_eq!(find(0, "="), Some(Act::Enter));
-        assert_eq!(find(0, "ans"), Some(Act::Insert("ans".into())));
-        assert_eq!(find(3, "2×2"), Some(Act::Insert("[□ □; □ □]".into()))); // \; is a literal ;
-        assert_eq!(find(4, "to"), Some(Act::Insert(" to ".into())));
+        assert_eq!(names, ["General", "Programming", "Algebra", "Custom", "Greek", "Number pad"]);
+        let find = |p: &str, l: &str| pages.iter().find(|g| g.name == p)?.keys.iter().flatten().find(|(k, _)| k == l).map(|(_, a)| a.clone());
+        assert_eq!(find("Number pad", "7"), Some(Act::Insert("7".into())));
+        assert_eq!(find("Number pad", "⌫"), Some(Act::Back));
+        assert_eq!(find("Number pad", "="), Some(Act::Enter));
+        assert_eq!(find("Number pad", "ans"), Some(Act::Insert("ans".into())));
+        assert_eq!(find("Algebra", "2×2"), Some(Act::Insert("[□ □; □ □]".into()))); // \; is a literal ;
+        assert_eq!(find("Algebra", ";"), Some(Act::Insert(";".into())));
+        assert_eq!(find("General", "to"), Some(Act::Insert(" to ".into())));
+        assert_eq!(find("Programming", "HEX"), Some(Act::Base(16)));
+        assert_eq!(find("Programming", "OR"), Some(Act::Insert("|".into())));
+        assert_eq!(find("Programming", "‖"), Some(Act::Insert("||".into())));
+        assert_eq!(find("Programming", "XOR"), Some(Act::Insert(" xor ".into())));
         assert!(pages.iter().all(|p| p.keys.len() <= p.columns * 6));
 
-        let p = parse("[Mine]\ncolumns=2\nkeys=a;;b|x(□);  c ;@enter\n").unwrap();
-        assert_eq!(p[0].keys, [Some(("a".into(), Act::Insert("a".into()))), None, Some(("b".into(), Act::Insert("x(□)".into()))), Some(("c".into(), Act::Insert("c".into()))), Some(("@enter".into(), Act::Enter))]);
-        for bad in ["[P]\ncolumns=0\nkeys=a", "[P]\ncolumns=x\nkeys=a", "[P]\ncolumns=3", "[P]\nkeys=a|@nope", "[P]\nkeys=|x", "[P]\nkeys=a|", "", "keys=a", "not ini ["] {
+        let p = parse("[Mine]\ncolumns=2\nkeys=a;;b|x(□);  c ;@enter;b3|@base:3\n").unwrap();
+        let k = |l: &str, a: Act| Some((l.to_string(), a));
+        assert_eq!(p[0].keys, [k("a", Act::Insert("a".into())), None, k("b", Act::Insert("x(□)".into())), k("c", Act::Insert("c".into())), k("@enter", Act::Enter), k("b3", Act::Base(3))]);
+        for bad in ["[P]\ncolumns=0\nkeys=a", "[P]\ncolumns=x\nkeys=a", "[P]\ncolumns=3", "[P]\nkeys=a|@nope", "[P]\nkeys=|x", "[P]\nkeys=a|", "", "keys=a", "not ini [", "[P]\nkeys=a|@base:1", "[P]\nkeys=a|@base:x"] {
             assert!(parse(bad).is_err(), "{bad:?}");
         }
         assert_eq!(class(&Act::Insert("sin(□)".into())), Some("fn"));
         assert_eq!(class(&Act::Insert("×".into())), Some("op"));
         assert_eq!(class(&Act::Back), Some("op"));
         assert_eq!(class(&Act::Insert("km".into())), None);
+    }
+
+    #[test]
+    fn modes_and_migration() {
+        let names = |b: Vec<Vec<Page>>| b.iter().map(|ps| ps.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(",")).collect::<Vec<_>>();
+        assert_eq!(names(arrange(&parse(DEFAULT_KEYPAD).unwrap())), ["General", "Programming", "Algebra", "Custom,Greek", "Number pad"]);
+        // an edited old-style file: its pages become Custom pages, the modes come from the defaults
+        let old = parse(OLD_DEFAULT).unwrap();
+        assert_eq!(names(arrange(&old)), ["General", "Programming", "Algebra", "Basic,Scientific,Calculus,Matrix,Convert,Letters", "Number pad"]);
+        let a = arrange(&parse("[Number pad]\ncolumns=3\nkeys=1;2;3\n[General]\nkeys=x\n").unwrap());
+        assert_eq!((a[0][0].keys.len(), a[4][0].columns), (1, 3)); // the user's
+        assert_eq!(names(a)[3], "Custom,Greek"); // no other groups: the default Custom pages
+
+        // the untouched previous default is replaced; an edited file is kept
+        let path = std::env::temp_dir().join(format!("qcalcp-keypad-{}.ini", std::process::id()));
+        std::fs::write(&path, OLD_DEFAULT).unwrap();
+        let (p, w) = load(&path);
+        assert_eq!((p.len(), w.as_str()), (6, ""));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), DEFAULT_KEYPAD);
+        let edited = OLD_DEFAULT.replace("columns=7", "columns=6");
+        std::fs::write(&path, &edited).unwrap();
+        assert_eq!(load(&path).0[0].name, "Basic");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -1,5 +1,6 @@
 //! Calculator mode: math entry (libqalculate syntax) with a live result, a history of answer
-//! cards, history.txt. Shares the interpreter and plots with Octave mode through `qalc::eval_into`.
+//! cards, history.txt, and (Programming keypad) the result in hex/dec/oct/bin. Shares the
+//! interpreter and plots with Octave mode through `qalc::eval_into`.
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -32,6 +33,10 @@ pub struct Calc {
     /// [history, entry, preview] then the keypad: vertical = keypad below, horizontal = beside
     pub body: gtk::Box,
     preview: gtk::Label,
+    /// HEX/DEC/OCT/BIN of the preview or last answer, with the Programming keypad
+    bases: gtk::Label,
+    /// last answer, for the bases readout
+    last: RefCell<Option<Answer>>,
     list: gtk::ListBox,
     scroll: gtk::ScrolledWindow,
     /// typed input per list row ("" for notices), for tap-to-reuse
@@ -40,8 +45,9 @@ pub struct Calc {
     pending: RefCell<Option<glib::SourceId>>,
     /// keep the newest card in view
     stick: Cell<bool>,
-    /// room for the keypad on the right
+    /// room for the keypad on the right; too narrow for the number pad beside the mode's keys
     pub wide: Cell<bool>,
+    pub narrow: Cell<bool>,
 }
 
 impl Calc {
@@ -54,19 +60,15 @@ impl Calc {
         let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).valign(gtk::Align::End).build();
         list.add_css_class("calc-history");
         let scroll = gtk::ScrolledWindow::builder().child(&list).vexpand(true).hscrollbar_policy(gtk::PolicyType::Never).build();
-        let auto = gtk::ToggleButton::builder()
-            .label("Auto-visualize")
-            .tooltip_text("Plot answers that have a visualization (definite integrals, ...) right after Enter")
-            .action_name("app.auto-visual")
-            .build();
-        auto.add_css_class("flat");
-        let line = gtk::Box::builder().spacing(6).build();
-        line.append(&preview);
-        line.append(&auto);
+        let bases = gtk::Label::builder().xalign(0.0).selectable(true).wrap(true).wrap_mode(pango::WrapMode::WordChar).visible(false).build();
+        for c in ["calc-bases", "monospace", "dim-label"] {
+            bases.add_css_class(c);
+        }
         let column = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).hexpand(true).vexpand(true).build();
         column.append(&scroll);
         column.append(&entry);
-        column.append(&line);
+        column.append(&preview);
+        column.append(&bases);
         let body = gtk::Box::builder().spacing(8).margin_start(8).margin_end(8).margin_top(6).margin_bottom(8).build();
         body.append(&column);
         let root = gtk::Overlay::builder().child(&body).build();
@@ -76,6 +78,8 @@ impl Calc {
             entry,
             body,
             preview,
+            bases,
+            last: RefCell::new(None),
             list,
             scroll,
             exprs: RefCell::new(vec![]),
@@ -83,6 +87,7 @@ impl Calc {
             pending: RefCell::new(None),
             stick: Cell::new(true),
             wide: Cell::new(false),
+            narrow: Cell::new(true), // stacked until measured: side by side could force the window wider
         }
     }
 }
@@ -92,35 +97,19 @@ pub fn attach(ui: &Rc<Ui>) {
     let u = ui.clone();
     c.entry.connect_activate(move |_| run(&u));
 
-    // live result, debounced; never for plots (they'd draw) or unfilled slots
     let u = ui.clone();
     c.entry.connect_changed(move |e| {
         e.set_attributes(&pango::AttrList::new());
         e.remove_css_class("error");
-        if let Some(id) = u.calc.pending.take() {
-            id.remove();
-        }
-        let text = e.text().to_string();
-        if text.trim().is_empty() || text.contains("plot(") || text.contains(SLOT) {
-            u.calc.preview.set_text("");
-            return;
-        }
-        let u2 = u.clone();
-        // ponytail: preview runs on the UI thread; fine while qalc::preview's timeout is short
-        let id = glib::timeout_add_local_once(Duration::from_millis(250), move || {
-            u2.calc.pending.take();
-            let p = qalc::preview(&text).map(|p| format!("= {p}")).unwrap_or_default();
-            u2.calc.preview.set_text(&p);
-        });
-        *u.calc.pending.borrow_mut() = Some(id);
+        refresh(&u);
     });
 
-    // Tab / Shift+Tab: next / previous □
+    // Tab / Shift+Tab: next / previous □ (Tab accepts a completion while the popup is open)
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
-    let e = c.entry.clone();
+    let (u, e) = (ui.clone(), c.entry.clone());
     keys.connect_key_pressed(move |_, key, _, state| {
-        if !matches!(key, gdk::Key::Tab | gdk::Key::ISO_Left_Tab | gdk::Key::KP_Tab) {
+        if !matches!(key, gdk::Key::Tab | gdk::Key::ISO_Left_Tab | gdk::Key::KP_Tab) || u.calc_pop.is_open() {
             return glib::Propagation::Proceed;
         }
         let pos = e.position();
@@ -142,7 +131,7 @@ pub fn attach(ui: &Rc<Ui>) {
         let expr = usize::try_from(row.index()).ok().and_then(|i| u.calc.exprs.borrow().get(i).cloned()).unwrap_or_default();
         if !expr.is_empty() {
             let e = &u.calc.entry;
-            e.set_text(&expr);
+            u.calc_pop.quiet(|| e.set_text(&expr));
             e.grab_focus_without_selecting();
             e.set_position(-1);
         }
@@ -165,9 +154,12 @@ pub fn attach(ui: &Rc<Ui>) {
     c.root.add_overlay(&sensor);
     let u = ui.clone();
     sensor.connect_resize(move |_, w, h| {
-        // ponytail: "wide" = landscape with ~450 px left for the history; keypad_side forces a side
-        let wide = w >= 1000 && w > h;
-        if u.calc.wide.replace(wide) != wide {
+        // ponytail: "wide" = landscape with ~450 px left for the history; keypad_side forces a side.
+        // "narrow": no room for the number pad beside the mode's keys (16 = body margins)
+        let (wide, narrow) = (w >= 1000 && w > h, w - 16 < u.keypad.side_by_side_width());
+        // both replaced: a short-circuiting || would leave `narrow` stale whenever `wide` changes
+        let changed = (u.calc.wide.replace(wide) != wide) | (u.calc.narrow.replace(narrow) != narrow);
+        if changed {
             let u = u.clone();
             glib::idle_add_local_once(move || super::apply_layout(&u)); // not during allocation
         }
@@ -182,6 +174,65 @@ pub fn attach(ui: &Rc<Ui>) {
 
 fn history_path() -> PathBuf {
     crate::config_dir().join("history.txt")
+}
+
+/// Live result of the entry, debounced (after typing or an option change); never for plots
+/// (they'd draw) or unfilled slots.
+pub fn refresh(ui: &Rc<Ui>) {
+    let c = &ui.calc;
+    if let Some(id) = c.pending.take() {
+        id.remove();
+    }
+    let text = c.entry.text().to_string();
+    if text.trim().is_empty() || text.contains("plot(") || text.contains(SLOT) {
+        c.preview.set_text("");
+        return show_bases(ui, None);
+    }
+    let u = ui.clone();
+    // ponytail: preview runs on the UI thread; fine while qalc::preview's timeout is short
+    let id = glib::timeout_add_local_once(Duration::from_millis(250), move || {
+        u.calc.pending.take();
+        // a half-typed name ("integ") previews as nonsense (int(e·g)) while the popup offers names
+        let p = if u.calc_pop.is_open() { None } else { qalc::preview(&text) };
+        u.calc.preview.set_text(&p.as_ref().map(|p| format!("= {p}")).unwrap_or_default());
+        show_bases(&u, Some(p.as_deref().unwrap_or("")));
+    });
+    *c.pending.borrow_mut() = Some(id);
+}
+
+/// The bases readout (Programming keypad only): of the live result `preview` when it's an integer,
+/// else of the last answer when the entry is empty (`preview` None).
+pub fn show_bases(ui: &Ui, preview: Option<&str>) {
+    let c = &ui.calc;
+    let answer = match preview {
+        _ if ui.cfg.borrow().keypad_mode != "programming" => None,
+        Some(p) => preview_int(p, qalc::options().base).map(|n| Answer { result: n.to_string(), value: Some(crate::value::Value::num(n as f64)), ..Default::default() }),
+        None => c.last.borrow().clone(),
+    };
+    let text = answer.as_ref().and_then(qalc::bases).map(|b| b.iter().map(|(name, v)| format!("{name} {v}")).collect::<Vec<_>>().join("   "));
+    c.bases.set_text(text.as_deref().unwrap_or(""));
+    c.bases.set_visible(text.is_some());
+}
+
+/// The integer a live result shows ("255", "0xFF", "−12", "1111 1111" in base 2), if it is one.
+// ponytail: parses the preview text; a pure qalc::preview_answer would hand over the Answer itself
+fn preview_int(p: &str, base: u32) -> Option<i128> {
+    if p.contains('≈') {
+        return None;
+    }
+    let s: String = p.chars().filter(|c| !c.is_whitespace()).collect();
+    let (neg, s) = match s.strip_prefix(['-', '−']) {
+        Some(r) => (true, r),
+        None => (false, s.as_str()),
+    };
+    let (radix, digits) = match s.get(..2).map(str::to_ascii_lowercase).as_deref() {
+        Some("0x") => (16, &s[2..]),
+        Some("0b") => (2, &s[2..]),
+        Some("0o") => (8, &s[2..]),
+        _ => (base, s),
+    };
+    let n = i128::from_str_radix(digits, radix.clamp(2, 36)).ok()?;
+    Some(if neg { -n } else { n })
 }
 
 /// Evaluate the entry; leftover □ are highlighted instead.
@@ -208,6 +259,7 @@ pub fn run(ui: &Rc<Ui>) {
     }
     let r = eval(ui, expr);
     let msg = answer(ui, expr, &r);
+    super::sync_options(ui); // `set angle deg` and friends
     if let Ok(a) = &r {
         let auto = ui.cfg.borrow().auto_visual;
         if auto && let Some(v) = &a.visual {
@@ -228,7 +280,8 @@ pub fn run(ui: &Rc<Ui>) {
             eprintln!("history.txt: {e}");
         }
     }
-    c.entry.set_text("");
+    *c.last.borrow_mut() = r.ok();
+    ui.calc_pop.quiet(|| c.entry.set_text(""));
 }
 
 fn eval(ui: &Ui, expr: &str) -> Result<Answer, String> {
@@ -415,5 +468,18 @@ mod tests {
         let many: String = (0..KEEP + 7).map(|i| format!("{i}\t{i}\t{i}\t\n")).collect();
         let p = parse_history(&many);
         assert_eq!((p.len(), p[0].expr.as_str()), (KEEP, "7"));
+    }
+
+    #[test]
+    fn preview_integers() {
+        assert_eq!(preview_int("255", 10), Some(255));
+        assert_eq!(preview_int("0xFF", 16), Some(255));
+        assert_eq!(preview_int("FF", 16), Some(255));
+        assert_eq!(preview_int("0b1111 1111", 2), Some(255));
+        assert_eq!(preview_int("−12", 10), Some(-12));
+        assert_eq!(preview_int("1 000 000", 10), Some(1_000_000));
+        for no in ["1/3 ≈ 0.3333333333", "2.5", "x + 1", "5 km", "", "-"] {
+            assert_eq!(preview_int(no, 10), None, "{no}");
+        }
     }
 }

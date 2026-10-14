@@ -335,3 +335,10 @@ fn complex_display() {
     assert_eq!(run("c = {1i}"), "c =\n{\n  [1,1] = 0 + 1i\n}\n\n");
     assert!(run("s.z = 2 - 1i").contains("    z = 2 - 1i\n"));
 }
+
+#[test]
+fn hex_and_binary_literals() {
+    assert_eq!(run("0x1F + 0b1011"), "ans = 42\n");
+    assert_eq!(run("[0xff 0B11 0X10]"), mat(&["   255     3    16"]));
+    assert!(run("0x").starts_with("error:"));
+}

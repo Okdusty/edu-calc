@@ -52,14 +52,32 @@ impl Preview {
     }
 }
 
+/// Non-default result base and angle unit, for the prompt: "hex deg ", "" with the defaults.
+pub(super) fn opts_tag(o: &qalc::Options) -> String {
+    let base = match o.base {
+        10 => String::new(),
+        2 => "bin ".into(),
+        8 => "oct ".into(),
+        16 => "hex ".into(),
+        b => format!("base{b} "),
+    };
+    if o.angle == "rad" { base } else { format!("{base}{} ", o.angle) }
+}
+
 /// Log lines for an answer: `input = result`, then the approximation, other forms and warnings.
 fn answer_lines(a: &Answer) -> Vec<(Kind, String)> {
-    let mut v = vec![(Kind::In, format!("{} = {}", a.input, a.result))];
+    let mut v = vec![(Kind::In, crate::answer_head(a))];
     if let Some(x) = &a.approx {
         v.push((Kind::Dim, format!("  ≈ {x}")));
     }
-    if !a.alts.is_empty() {
-        let alts: Vec<String> = a.alts.iter().map(|(l, t)| format!("{l} {t}")).collect();
+    let bases = crate::bases_for(a);
+    if let Some(b) = &bases {
+        v.push((Kind::Dim, format!("  {}", crate::bases_line(b))));
+    }
+    // the bases line stands in for the engine's own decimal/hex/bin/oct forms
+    let shown = |l: &str| bases.is_none() || !["decimal", "hex", "bin", "oct"].contains(&l);
+    let alts: Vec<String> = a.alts.iter().filter(|(l, _)| shown(l)).map(|(l, t)| format!("{l} {t}")).collect();
+    if !alts.is_empty() {
         v.push((Kind::Dim, format!("  {}", alts.join(" · "))));
     }
     v.extend(a.messages.iter().map(|m| (Kind::Warn, format!("  {m}"))));
@@ -75,7 +93,15 @@ impl App {
         let r = guarded(|| qalc::eval_into(&mut self.interp, line));
         self.probe = None; // plot(...) may have replaced the figure under it
         match r {
-            Ok(a) => self.show(a),
+            Ok(a) => {
+                self.show(a);
+                // `set KEY VALUE` changed the calculator's options: they persist
+                if line.split_whitespace().next() == Some("set")
+                    && let Err(e) = qalc::options().save_ini(&crate::ini_path())
+                {
+                    self.push(Kind::Warn, &format!("qcalcp.ini: {e}"));
+                }
+            }
             Err(e) => {
                 self.push(Kind::In, line);
                 self.push(Kind::Err, &format!("error: {e}"));
@@ -121,7 +147,8 @@ impl App {
         }
         let input: String = self.input.iter().collect();
         if self.preview.update(&input, now) {
-            self.preview.text = preview_of(&input);
+            // a half-typed name ("integ") previews as nonsense (int(e·g)) while the popup offers names
+            self.preview.text = if self.menu.is_some() { None } else { preview_of(&input) };
         }
     }
 }
@@ -158,17 +185,18 @@ mod tests {
     #[test]
     fn mode_toggle_and_prompt() {
         let mut app = App::with(Interp::new(), "");
-        assert_eq!((app.lang, app.prompt()), (Lang::Calc, "= "));
+        // ends_with: qalc's settings test may switch the angle unit (shown in the prompt) meanwhile
+        assert!(app.lang == Lang::Calc && app.prompt().ends_with("= "));
         assert!(app.help().contains("^O"));
         key(&mut app, KeyCode::F(5));
-        assert_eq!((app.lang, app.prompt()), (Lang::Octave, ">> "));
+        assert_eq!((app.lang, app.prompt().as_str()), (Lang::Octave, ">> "));
         assert!(app.help().contains("^K"));
         enter(&mut app, "if 1");
         assert_eq!(app.prompt(), ".. ");
         enter(&mut app, "end");
         assert_eq!(app.prompt(), ">> ");
         key(&mut app, KeyCode::F(5));
-        assert_eq!(app.prompt(), "= ");
+        assert!(app.prompt().ends_with("= "));
         key(&mut app, KeyCode::F(6));
         assert!(!app.auto_plot);
     }
@@ -188,6 +216,17 @@ mod tests {
         assert_eq!((app.lang, input(&app)), (Lang::Octave, "tq_h = 3;".into()));
         key(&mut app, KeyCode::Down);
         assert_eq!((app.lang, input(&app)), (Lang::Octave, String::new()));
+    }
+
+    #[test]
+    fn options_tag() {
+        let mut o = qalc::Options::default();
+        assert_eq!(opts_tag(&o), "");
+        (o.base, o.angle) = (16, "deg".into());
+        assert_eq!(opts_tag(&o), "hex deg ");
+        (o.base, o.angle) = (36, "rad".into());
+        assert_eq!(opts_tag(&o), "base36 ");
+        assert_eq!(crate::bases_line(&[("HEX", "FF".into()), ("DEC", "255".into())]), "HEX FF · DEC 255");
     }
 
     #[test]
