@@ -136,6 +136,7 @@ fn is_data(path: &str) -> bool {
 }
 
 fn main() -> ExitCode {
+    bundled_python_home();
     let a = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => return usage(&e),
@@ -264,18 +265,52 @@ fn column_stats(m: &value::Matrix) -> String {
 
 /// GUI when a display is usable, else the TUI (ssh, bare tty, broken GTK).
 fn gui_or_tui(script: Option<PathBuf>) -> ExitCode {
-    // GTK would otherwise find a running session's default socket (ssh, other VT) and pop a window there
-    let no_display = ["WAYLAND_DISPLAY", "DISPLAY"].iter().all(|v| std::env::var_os(v).is_none_or(|s| s.is_empty()));
+    // GTK would otherwise find a running session's default socket (ssh, other VT) and pop a window there.
+    // Only X11/Wayland systems say so through these; Windows and macOS always have a display.
+    let no_display = cfg!(all(unix, not(target_os = "macos"))) && ["WAYLAND_DISPLAY", "DISPLAY"].iter().all(|v| std::env::var_os(v).is_none_or(|s| s.is_empty()));
     if no_display {
         eprintln!("qcalcp: no WAYLAND_DISPLAY/DISPLAY, using the TUI");
         return run_tui(script);
     }
     match gtk4::init() {
-        Ok(()) => gui::run(script),
+        Ok(()) => {
+            #[cfg(windows)]
+            detach_console();
+            gui::run(script)
+        }
         Err(e) => {
             eprintln!("qcalcp: GTK unavailable ({e}), using the TUI");
             run_tui(script)
         }
+    }
+}
+
+/// Started from Explorer, the console is ours alone (a terminal's would list its shell too): close
+/// that console window, the GUI doesn't need it.
+// ponytail: it still flashes up for a moment; a separate windows-subsystem launcher would avoid that
+#[cfg(windows)]
+fn detach_console() {
+    unsafe extern "system" {
+        fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+        fn FreeConsole() -> i32;
+    }
+    let mut ids = [0u32; 2];
+    if unsafe { GetConsoleProcessList(ids.as_mut_ptr(), 2) } == 1 {
+        unsafe { FreeConsole() };
+    }
+}
+
+/// Packaged builds (AppImage, Windows zip) carry Python's standard library next to the binary,
+/// in ../lib/python3.*: point the embedded Python there unless PYTHONHOME says otherwise.
+fn bundled_python_home() {
+    if std::env::var_os("PYTHONHOME").is_some() {
+        return;
+    }
+    let Some(prefix) = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.parent()?.to_path_buf())) else { return };
+    let stdlib = std::fs::read_dir(prefix.join("lib")).into_iter().flatten().flatten();
+    if stdlib.into_iter().any(|d| d.file_name().to_string_lossy().starts_with("python3") && d.path().join("os.py").exists()) {
+        // SAFETY: first thing in main, before any thread exists
+        unsafe { std::env::set_var("PYTHONHOME", &prefix) };
     }
 }
 

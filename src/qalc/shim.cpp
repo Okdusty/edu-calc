@@ -427,8 +427,9 @@ static string range(const MathStructure &f, const string &x, vector<double> pts 
     pts.erase(std::remove_if(pts.begin(), pts.end(), [](double v) { return !std::isfinite(v); }), pts.end());
     if (pts.empty()) return "[-5 5]";
     auto [lo, hi] = std::minmax_element(pts.begin(), pts.end());
-    double pad = std::max(2.0, (*hi - *lo) / 4);
-    return "[" + fmt(std::floor(*lo - pad)) + " " + fmt(std::ceil(*hi + pad)) + "]";
+    // a tight margin, in half units: past the outer roots a polynomial's growth flattens the rest
+    double spread = *hi - *lo, pad = spread < 1 ? 2 : std::max(1.0, spread / 4);
+    return "[" + fmt(std::floor(2 * (*lo - pad)) / 2) + " " + fmt(std::ceil(2 * (*hi + pad)) / 2) + "]";
 }
 
 // f and F (its integral or derivative, as Octave code and as shown) on one plot, key points marked.

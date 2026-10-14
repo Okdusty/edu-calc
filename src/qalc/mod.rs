@@ -980,7 +980,7 @@ mod tests {
         assert!(a.approx.as_deref() == Some("[5.372281323  −0.3722813233]") && a.octave.is_some(), "{a:?}");
         assert_eq!(vis("[1 2; 3 4]^-1"), "matview([-2, 1; 3./2, -(1./2)])");
         assert_eq!(vis("x^2 + 1"), "fplot(@(x) x.^2 + 1, [-2 2]); keypoints on"); // around the vertex
-        assert_eq!(vis("x^2 - 4x + 3"), "fplot(@(x) x.^2 - (4.*x) + 3, [-1 5]); keypoints on"); // roots 1, 3, vertex 2
+        assert_eq!(vis("x^2 - 4x + 3"), "fplot(@(x) x.^2 - (4.*x) + 3, [0 4]); keypoints on"); // roots 1, 3, vertex 2
         assert_eq!(vis("sin(x)"), "fplot(@(x) sin(x), [-5 5]); keypoints on"); // not a polynomial: the default range
         assert_eq!(vis("diff(sin(x)*y, x)"), "fsurf(@(x, y) cos(x).*y, [-5 5 -5 5])"); // two unknowns: a surface
         assert!(ok("5 km to mi").visual.is_none() && ok("2 + 2").visual.is_none());
@@ -1000,12 +1000,12 @@ mod tests {
     fn extrema_and_key_points() {
         let a = ok("extrema(x^3 - 3x)");
         assert_eq!(a.result, "[1  −1]");
-        assert_eq!(a.visual.as_deref(), Some("figure; fplot(@(x) x.^3 - (3.*x), [-4 4]); keypoints on"));
+        assert_eq!(a.visual.as_deref(), Some("figure; fplot(@(x) x.^3 - (3.*x), [-3 3]); keypoints on"));
         let a = ok("inflections(x^4 - x^2)");
         assert_eq!(a.approx.as_deref(), Some("[0.4082482905  −0.4082482905]"));
-        assert_eq!(a.visual.as_deref(), Some("figure; fplot(@(x) x.^4 - (x.^2), [-3 3]); keypoints on"));
+        assert_eq!(a.visual.as_deref(), Some("figure; fplot(@(x) x.^4 - (x.^2), [-2 2]); keypoints on"));
         let a = ok("extrema(\\t^2 - 2\\t, \\t)");
-        assert_eq!((a.result.as_str(), a.visual.as_deref()), ("1", Some("figure; fplot(@(t) t.^2 - (2.*t), [-2 4]); keypoints on")));
+        assert_eq!((a.result.as_str(), a.visual.as_deref()), ("1", Some("figure; fplot(@(t) t.^2 - (2.*t), [-1 3]); keypoints on")));
         let mut it = Interp::new();
         it.eval(a.visual.unwrap().trim_end_matches("; keypoints on")).unwrap();
     }

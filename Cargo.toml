@@ -1,7 +1,10 @@
 [package]
 name = "qcalcp"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 edition = "2024"
+description = "Calculator, Octave-style interpreter and plotter: GTK 4, terminal UI and command line"
+license = "GPL-2.0-or-later" # links libqalculate (GPL-2.0-or-later)
+repository = "https://github.com/Okdusty/qcalcp"
 
 [dependencies]
 gtk4 = { version = "0.11.5", features = ["v4_12"] }
@@ -18,3 +21,6 @@ debug = false
 
 [build-dependencies]
 cc = "1"
+
+[profile.release]
+strip = true

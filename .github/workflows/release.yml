@@ -1,0 +1,132 @@
+# Linux AppImage and Windows zip. A pushed v* tag also publishes them as a pre-release;
+# "Run workflow" (workflow_dispatch) only builds them, as artifacts of the run.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  QALC_VERSION: "5.12.0"
+  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'snapshot' }}
+
+jobs:
+  appimage:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libgtk-4-dev python3-dev \
+            libgmp-dev libmpfr-dev libxml2-dev intltool gettext \
+            librsvg2-common adwaita-icon-theme xvfb file
+
+      # Ubuntu 24.04 ships libqalculate 5.0; qcalcp is developed against 5.12. Compiled-in
+      # definitions: the AppImage can't rely on a data directory path.
+      - name: libqalculate ${{ env.QALC_VERSION }}
+        run: |
+          curl -fsSL https://github.com/Qalculate/libqalculate/releases/download/v$QALC_VERSION/libqalculate-$QALC_VERSION.tar.gz | tar xz
+          cd libqalculate-$QALC_VERSION
+          ./configure --prefix=/usr/local --disable-static --enable-compiled-definitions \
+            --without-libcurl --without-icu --without-gnuplot-call --without-readline
+          make -j"$(nproc)"
+          sudo make install
+          sudo ldconfig
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release
+
+      - name: AppImage
+        run: VERSION="${VERSION#v}" bash packaging/appimage.sh
+
+      - name: Smoke test
+        run: |
+          # nothing from the build machine may stand in for what the AppImage should carry
+          sudo rm -rf /usr/local/share/qalculate
+          export APPIMAGE_EXTRACT_AND_RUN=1 XDG_CONFIG_HOME="$RUNNER_TEMP/cfg"
+          app=$(ls build/qcalcp-*-x86_64.AppImage)
+          "$app" '5 km to mi' | tee out.txt && grep -q '3.106855961 mi' out.txt
+          "$app" -e "disp(pyeval('2**10'))" | tee out.txt && grep -q 1024 out.txt
+          "$app" demo/models.m -o smoke.png && test -s smoke.png
+          # the GUI must still be up after 15 s (124 = stopped by timeout)
+          set +e
+          GSK_RENDERER=cairo timeout 15 xvfb-run -a "$app" gui
+          code=$?
+          set -e
+          test "$code" = 124
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: build/qcalcp-*-x86_64.AppImage
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64 # MSYS2 builds libqalculate for UCRT64 and Clang, not MINGW64
+          update: true
+          install: zip
+          pacboy: >-
+            toolchain:p rust:p pkgconf:p gtk4:p libqalculate:p python:p ntldd:p
+            adwaita-icon-theme:p librsvg:p
+
+      - name: Build
+        run: |
+          rustc --version
+          pkg-config --modversion gtk4 libqalculate
+          cargo build --release
+
+      - name: Zip
+        run: VERSION="${VERSION#v}" bash packaging/windows.sh
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          # only Windows itself on PATH: every DLL has to come from the zip
+          $env:PATH = "C:\Windows\System32;C:\Windows"
+          $env:XDG_CONFIG_HOME = "$env:RUNNER_TEMP\cfg"
+          $exe = (Get-ChildItem build -Recurse -Filter qcalcp.exe | Select-Object -First 1).FullName
+          $out = & $exe "5 km to mi" | Out-String; $out
+          if ($LASTEXITCODE -or $out -notmatch "3.106855961 mi") { exit 1 }
+          $out = & $exe -e "disp(pyeval('2**10'))" | Out-String; $out
+          if ($LASTEXITCODE -or $out -notmatch "1024") { exit 1 }
+          & $exe demo/models.m -o smoke.png
+          if ($LASTEXITCODE -or -not (Test-Path smoke.png)) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: build/qcalcp-*-win64.zip
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [appimage, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --prerelease \
+            --title "qcalcp $GITHUB_REF_NAME (snapshot beta)" \
+            --notes "Snapshot beta. Linux: qcalcp-*-x86_64.AppImage (glibc 2.39+). Windows 10/11: unzip qcalcp-*-win64.zip and run bin\\qcalcp.exe. See the README for what's in it and the known gaps."

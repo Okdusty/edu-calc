@@ -215,6 +215,8 @@ pub struct Axes {
     /// mark key points of line series (extrema, roots, intercepts, inflections, vertex and
     /// symmetry): computed from the data at render time, so they follow resampling (`keypoints on`)
     pub keypoints: bool,
+    /// `axis equal`: the renderer widens one range so a unit is as long on x as on y (2D, linear)
+    pub equal: bool,
 }
 
 /// Text placed at data coords (z ignored in 2D). Like all plot text it may use math markup.
@@ -248,6 +250,7 @@ impl Axes {
             pins: vec![],
             notes: vec![],
             keypoints: false,
+            equal: false,
         }
     }
     /// Add a series, replacing existing ones unless `hold` is on.
@@ -470,8 +473,9 @@ impl Theme {
             grid: [220, 220, 220],
             // Octave/MATLAB default line colors
             palette: vec![[0, 114, 189], [217, 83, 25], [237, 177, 32], [126, 47, 142], [119, 172, 48], [77, 190, 238], [162, 20, 47]],
-            // covers superscripts and math symbols (∫ √ ⁻ ²), unlike the usual sans default
-            font: "DejaVu Sans".into(),
+            // covers superscripts and math symbols (∫ √ ⁻ ²), unlike the usual sans default;
+            // Windows rarely has it, and text in a missing font is dropped
+            font: if cfg!(windows) { "Segoe UI" } else { "DejaVu Sans" }.into(),
             font_size: 14,
         }
     }

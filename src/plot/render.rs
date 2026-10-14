@@ -372,11 +372,11 @@ where
     fn axes2d(&self, i: usize, a: &Axes, cell: Rect, frames: &mut Vec<Frame>) -> Res {
         let fs = self.fs;
         let [bx, by, bz] = a.bounds();
-        let bx = if a.logx { log_range(bx, a.xlim.is_some(), pos_extent(a, 0)) } else { bx };
-        let by = if a.logy { log_range(by, a.ylim.is_some(), pos_extent(a, 1)) } else { by };
+        let mut bx = if a.logx { log_range(bx, a.xlim.is_some(), pos_extent(a, 0)) } else { bx };
+        let mut by = if a.logy { log_range(by, a.ylim.is_some(), pos_extent(a, 1)) } else { by };
         let tick_font = self.font(0.88, self.mix(0.9));
         let tl = (0.35 * fs).round();
-        let (plot, xt, yt) = if self.tiny {
+        let layout = |bx: (f64, f64), by: (f64, f64)| if self.tiny {
             let r = Rect { x0: cell.x0 + self.u, y0: cell.y0 + self.u, x1: cell.x1 - self.u, y1: cell.y1 - self.u };
             (r, ticks(bx, a.logx, 4), ticks(by, a.logy, 3))
         } else {
@@ -397,6 +397,22 @@ where
             };
             (Rect { x0: self.snap(left), y0: self.snap(top), x1: self.snap(right), y1: self.snap(bottom) }, xt, yt)
         };
+        let (mut plot, mut xt, mut yt) = layout(bx, by);
+        if a.equal && !(a.logx || a.logy) && plot.w() > 0.0 && plot.h() > 0.0 {
+            // axis equal: widen the range with room to spare, then lay out again for its ticks
+            // ponytail: the second layout may shift the box by a tick label's width, a few px off square
+            let (kx, ky) = (plot.w() / (bx.1 - bx.0).abs(), plot.h() / (by.1 - by.0).abs());
+            let widen = |r: (f64, f64), span: f64| {
+                let (c, h) = ((r.0 + r.1) / 2.0, span.copysign(r.1 - r.0) / 2.0);
+                (c - h, c + h)
+            };
+            if kx > ky {
+                bx = widen(bx, plot.w() / ky);
+            } else {
+                by = widen(by, plot.h() / kx);
+            }
+            (plot, xt, yt) = layout(bx, by);
+        }
         if plot.w() < 4.0 || plot.h() < 4.0 {
             return Ok(());
         }
@@ -508,10 +524,10 @@ where
                 }
             }
             Data::Image { z, x, y } => {
-                // ponytail: row 1 on top (imagesc) but y ticks still ascend; Axes has no reversed-y flag
+                // row 0 at the low y end; imagesc and matview reverse ylim to put it on top
                 let (dx, dy) = ((x.1 - x.0) / z.cols as f64, (y.1 - y.0) / z.rows as f64);
                 let xe: Vec<f64> = (0..=z.cols).map(|j| self.whole(sx.px(x.0 + j as f64 * dx))).collect();
-                let ye: Vec<f64> = (0..=z.rows).map(|i| self.whole(sy.px(y.1 - i as f64 * dy))).collect();
+                let ye: Vec<f64> = (0..=z.rows).map(|i| self.whole(sy.px(y.0 + i as f64 * dy))).collect();
                 for i in 0..z.rows {
                     for j in 0..z.cols {
                         let v = z.get(i, j);
@@ -1393,6 +1409,21 @@ mod tests {
         assert!(contour_segments(&x, &y, &z, 50.0).is_empty());
         assert_eq!(cmap("gray", 0.0), [0, 0, 0]);
         assert_eq!(cmap("nope", 1.0), [253, 231, 37]);
+    }
+
+    #[test]
+    fn axis_equal_is_square() {
+        let t: Vec<f64> = (0..100).map(|k| k as f64 * 0.0635).collect();
+        let mut f = figure(vec![Series::new(Data::Line { x: t.iter().map(|v| v.cos()).collect(), y: t.iter().map(|v| v.sin()).collect() })]);
+        f.axes[0].equal = true;
+        for (w, h) in [(900, 400), (400, 900)] {
+            let (_, frames) = render_frames(&f, &Theme::dark(), w, h).unwrap();
+            let fr = &frames[0];
+            let [x0, y0, x1, y1] = fr.rect;
+            let (kx, ky) = ((x1 - x0) / (fr.bounds[0].1 - fr.bounds[0].0), (y1 - y0) / (fr.bounds[1].1 - fr.bounds[1].0));
+            assert!((kx / ky - 1.0).abs() < 0.02, "{w}x{h}: {kx} px/unit across, {ky} down");
+            assert!(fr.bounds[0].0 <= -1.0 && fr.bounds[1].1 >= 1.0); // the circle still fits
+        }
     }
 
     fn figure(series: Vec<Series>) -> Figure {

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=qcalcp
+GenericName=Calculator and Plotter
+Comment=Calculator, Octave-style interpreter and plotter
+Exec=qcalcp gui %f
+Icon=qcalcp
+Terminal=false
+Categories=Education;Math;
+Keywords=calculator;octave;matlab;plot;graph;units;qalculate;
+MimeType=text/x-octave;text/x-matlab;

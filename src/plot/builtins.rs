@@ -833,8 +833,7 @@ fn contourf(it: &mut Interp, args: &[Value], _: usize) -> R {
     let mut img = Matrix::zeros(nr, nc);
     for i in 0..nr {
         for j in 0..nc {
-            // image row 0 is the top = last Z row
-            let fi = (nr - 1 - i) as f64 / (nr - 1) as f64 * (z.rows - 1) as f64;
+            let fi = i as f64 / (nr - 1) as f64 * (z.rows - 1) as f64;
             let fj = j as f64 / (nc - 1) as f64 * (z.cols - 1) as f64;
             img.set(i, j, band(bilinear(&z, fi, fj)));
         }
@@ -858,7 +857,7 @@ fn bilinear(z: &Matrix, fi: f64, fj: f64) -> f64 {
     top * (1.0 - t) + bot * t
 }
 
-/// imagesc(C | x, y, C): row 1 at the top, axes tight around the pixels.
+/// imagesc(C | x, y, C): row 1 at the top (y runs down, Octave's `axis ij`), axes tight around the pixels.
 fn imagesc(it: &mut Interp, args: &[Value], _: usize) -> R {
     let (nums, _) = leading(&real_args(it, "imagesc", args))?;
     let (z, x, y) = match &nums[..] {
@@ -878,7 +877,7 @@ fn imagesc(it: &mut Interp, args: &[Value], _: usize) -> R {
     let (xe, ye) = (ext(x, z.cols), ext(y, z.rows));
     let a = add(it, vec![Series::new(Data::Image { z, x: xe, y: ye })]);
     if !a.hold {
-        (a.xlim, a.ylim) = (Some(xe), Some(ye));
+        (a.xlim, a.ylim) = (Some(xe), Some((ye.1, ye.0)));
     }
     touch(it)
 }
@@ -888,10 +887,9 @@ fn imagesc(it: &mut Interp, args: &[Value], _: usize) -> R {
 fn pcolor(it: &mut Interp, args: &[Value], _: usize) -> R {
     let (nums, _) = leading(&real_args(it, "pcolor", args))?;
     let (x, y, z) = grid_args("pcolor", &nums)?;
-    let flipped = Matrix::new(z.rows, z.cols, (0..z.len()).map(|k| z.get(z.rows - 1 - k % z.rows, k / z.rows)).collect());
     let pad = |(lo, hi): (f64, f64)| if lo < hi { (lo, hi) } else { (lo - 0.5, hi + 0.5) };
     let (xe, ye) = (pad(range(&x.data)), pad(range(&y.data)));
-    let a = add(it, vec![Series::new(Data::Image { z: flipped, x: xe, y: ye })]);
+    let a = add(it, vec![Series::new(Data::Image { z, x: xe, y: ye })]);
     if !a.hold {
         (a.xlim, a.ylim) = (Some(xe), Some(ye));
     }
@@ -1426,6 +1424,7 @@ fn equal(a: &mut Axes) {
         wy = wx / 1.35;
     }
     (a.xlim, a.ylim) = (Some((cx - wx, cx + wx)), Some((cy - wy, cy + wy)));
+    a.equal = true; // the renderer matches the plot box's actual shape
 }
 
 fn axis(it: &mut Interp, args: &[Value], nargout: usize) -> R {
@@ -1433,7 +1432,7 @@ fn axis(it: &mut Interp, args: &[Value], nargout: usize) -> R {
     for v in args {
         match v {
             Value::Str(s) => match s.to_ascii_lowercase().as_str() {
-                "auto" | "normal" => (a.xlim, a.ylim, a.zlim) = (None, None, None),
+                "auto" | "normal" => (a.xlim, a.ylim, a.zlim, a.equal) = (None, None, None, false),
                 "tight" => tight(a),
                 "equal" | "image" => {
                     tight(a);
@@ -1446,7 +1445,17 @@ fn axis(it: &mut Interp, args: &[Value], nargout: usize) -> R {
                     (a.xlim, a.ylim, a.zlim) = (Some(b[0]), Some(b[1]), Some(b[2]));
                 }
                 // ponytail: box shape and axis visibility are not modeled
-                "square" | "on" | "off" | "ij" | "xy" | "fill" | "vis3d" => {}
+                // y direction: "ij" runs down like a matrix (imagesc's default), "xy" up
+                "xy" => {
+                    if let Some((lo, hi)) = a.ylim.filter(|(lo, hi)| lo > hi) {
+                        a.ylim = Some((hi, lo));
+                    }
+                }
+                "ij" => {
+                    let (lo, hi) = a.bounds()[1];
+                    a.ylim = Some((lo.max(hi), lo.min(hi)));
+                }
+                "square" | "on" | "off" | "fill" | "vis3d" => {}
                 o => return Err(format!("axis: unknown option '{o}'")),
             },
             v => {
@@ -1771,7 +1780,12 @@ mod tests {
         call(&mut it, "contourf", &[zz.clone()], 0).unwrap();
         assert!(matches!(it.plots.axes().series[0].data, Data::Image { .. }));
         call(&mut it, "imagesc", &[zz], 0).unwrap();
-        assert_eq!(it.plots.axes().xlim, Some((0.5, 3.5)));
+        // row 1 on top: y runs down (Octave's axis ij); axis xy turns it up, axis ij back
+        assert_eq!((it.plots.axes().xlim, it.plots.axes().ylim), (Some((0.5, 3.5)), Some((2.5, 0.5))));
+        call(&mut it, "axis", &[Value::from("xy")], 0).unwrap();
+        assert_eq!(it.plots.axes().ylim, Some((0.5, 2.5)));
+        call(&mut it, "axis", &[Value::from("ij")], 0).unwrap();
+        assert_eq!(it.plots.axes().ylim, Some((2.5, 0.5)));
         let (c, k) = (call(&mut it, "hist", &[row(&[1., 2., 2., 3., 3., 3.]), Value::num(3.)], 2).unwrap(), 0);
         assert_eq!(c[k].matrix().unwrap().data, [1., 2., 3.]);
         let sph = call(&mut it, "sphere", &[Value::num(4.)], 3).unwrap();

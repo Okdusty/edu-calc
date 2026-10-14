@@ -26,7 +26,8 @@ fn integral_text(f: &Value, a: f64, b: f64) -> String {
         },
         _ => "x".into(),
     };
-    format!("∫_{{{}}}^{{{}}} {name} d{var}", num(a), num(b))
+    let lim = |v: f64| if v.is_infinite() { (if v > 0.0 { "∞" } else { "−∞" }).to_string() } else { num(v) };
+    format!("∫_{{{}}}^{{{}}} {name} d{var}", lim(a), lim(b))
 }
 
 fn bounds(name: &str, a: &Value, b: &Value) -> Result<(f64, f64), String> {
@@ -75,10 +76,17 @@ fn signed_parts(x: &[f64], y: &[f64]) -> [Option<(Vec<f64>, Vec<f64>)>; 2] {
 /// intplot(f, a, b): f over [a, b] padded 20%, the signed area shaded, a note with the integral.
 pub(super) fn intplot(it: &mut Interp, args: &[Value], nargout: usize) -> R {
     let [f, a, b] = args else { return Err("intplot: expected (f, a, b)".into()) };
-    let (a, b) = bounds("intplot", a, b)?;
+    let (a, b) = (a.scalar()?, b.scalar()?);
+    if a.is_nan() || b.is_nan() || a == b {
+        return Err("intplot: a and b must be different numbers".into());
+    }
     let h = func(it, f, false)?;
     let val = first(it.call(&Value::from("integral"), &[h.clone(), Value::num(a), Value::num(b)], 1))?.scalar()?;
-    let (lo, hi) = (a.min(b), a.max(b));
+    // an infinite limit is drawn 8 units past the other one (±5 when both are): the shaded stretch
+    // ponytail: fixed width, a slowly decaying integrand's tail beyond it isn't shown
+    let end = |e: f64, o: f64| if e.is_finite() { e } else if o.is_finite() { o + 8.0 * e.signum() } else { 5.0 * e.signum() };
+    let (da, db) = (end(a, b), end(b, a));
+    let (lo, hi) = (da.min(db), da.max(db));
     let pad = 0.2 * (hi - lo);
     let (x, y, ys) = curve(it, "intplot", &h, lo - pad, hi + pad)?;
     let sx = linspace(lo, hi, 400);
@@ -97,7 +105,13 @@ pub(super) fn intplot(it: &mut Interp, args: &[Value], nargout: usize) -> R {
         ax.grid = true;
     }
     let (y0, y1) = ax.ylim.unwrap_or_else(|| range(&ys));
-    ax.series.push(Series { color: Some(GRAY), width: 1.0, line: LineStyle::Dashed, ..Series::new(Data::Line { x: vec![a, a, f64::NAN, b, b], y: vec![y0, y1, f64::NAN, y0, y1] }) });
+    // dashed limits, only where they are finite
+    let (mut lx, mut ly) = (vec![], vec![]);
+    for v in [a, b].into_iter().filter(|v| v.is_finite()) {
+        lx.extend([v, v, f64::NAN]);
+        ly.extend([y0, y1, f64::NAN]);
+    }
+    ax.series.push(Series { color: Some(GRAY), width: 1.0, line: LineStyle::Dashed, ..Series::new(Data::Line { x: lx, y: ly }) });
     // ponytail: |result| below 1e-12 of the area scale reads as roundoff and shows as 0
     let scale = sy.iter().filter(|v| v.is_finite()).fold(0.0f64, |m, v| m.max(v.abs())) * (hi - lo);
     let shown = if val.abs() < 1e-12 * scale.max(1e-300) { 0.0 } else { val };
@@ -252,8 +266,8 @@ pub(super) fn matview(it: &mut Interp, args: &[Value], _: usize) -> R {
     if r == 0 || c == 0 {
         return Err("matview: empty matrix".into());
     }
-    // y runs down (reversed ylim), so image row 0 (drawn at the high y end) is A's last row
-    let z = Matrix::new(r, c, (0..r * c).map(|k| m.get(r - 1 - k % r, k / r)).map(|v| if m.is_real() { v.re } else { v.norm() }).collect());
+    // y runs down (reversed ylim), so image row 0 (drawn at the low y end) lands on top
+    let z = Matrix::new(r, c, m.data.iter().map(|v| if m.is_real() { v.re } else { v.norm() }).collect());
     let ax = add(it, vec![Series::new(Data::Image { z, x: (0.5, c as f64 + 0.5), y: (0.5, r as f64 + 0.5) })]);
     if !ax.hold {
         (ax.xlim, ax.ylim) = (Some((0.5, c as f64 + 0.5)), Some((r as f64 + 0.5, 0.5)));

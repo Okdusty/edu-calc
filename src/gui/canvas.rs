@@ -705,7 +705,8 @@ pub fn adjust(r: (f64, f64), shift: f64, factor: f64, anchor: f64, log: bool) ->
     let c = lo + span * (shift + anchor);
     let (a, b) = (c - span * anchor * factor, c + span * (1.0 - anchor) * factor);
     let out = if log { (10f64.powf(a), 10f64.powf(b)) } else { (a, b) };
-    let ok = out.0.is_finite() && out.1.is_finite() && out.1 - out.0 > out.0.abs().max(out.1.abs()) * 1e-12;
+    // abs: a reversed range (imagesc, matview: y runs down) zooms like any other
+    let ok = out.0.is_finite() && out.1.is_finite() && (out.1 - out.0).abs() > out.0.abs().max(out.1.abs()) * 1e-12;
     if ok { out } else { r }
 }
 
