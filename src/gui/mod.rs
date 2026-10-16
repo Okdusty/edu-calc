@@ -62,6 +62,7 @@ mod complete;
 mod config;
 mod data;
 mod keypad;
+mod resize;
 mod simple;
 
 use std::cell::{Cell, RefCell};
@@ -94,6 +95,8 @@ headerbar button, .plot-bar button { min-height: 36px; min-width: 36px; }
 .keypad { padding: 4px; }
 .keypad button { min-height: 44px; min-width: 40px; padding-left: 4px; padding-right: 4px; font-size: 1.15em; }
 .keypad .op { font-weight: bold; }
+.keypad-height-grip { min-height: 22px; background: alpha(#718096, 0.14); font-size: 12px; }
+.keypad-height-grip:hover, .keypad-height-grip:focus { background: alpha(#718096, 0.3); }
 .calc-bases { font-size: 0.9em; }
 .completion row { padding: 2px 6px; }
 .completion .desc { font-size: 0.85em; }
@@ -791,7 +794,8 @@ fn apply_layout(ui: &Ui) {
         slot.append(pad);
     }
     ui.calc.body.set_orientation(if right { gtk::Orientation::Horizontal } else { gtk::Orientation::Vertical });
-    pad.set_vexpand(right);
+    pad.set_vexpand(false);
+    pad.set_valign(if right { gtk::Align::Start } else { gtk::Align::Fill });
     pad.set_visible(shown);
     // number pad beside the mode's keys when the keypad spans the width, below them when it's to the right
     ui.keypad.show(mode, c.number_pad, !calc || !(right || ui.calc.narrow.get()));

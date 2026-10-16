@@ -208,20 +208,24 @@ fn create(ui: &Rc<Ui>, var: Option<&str>, embedded: bool) -> Option<Rc<Ed>> {
     let status = gtk::Label::builder().xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).margin_start(8).margin_end(8).margin_top(2).margin_bottom(4).build();
     let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
     if embedded {
-        let tools = gtk::FlowBox::builder().selection_mode(gtk::SelectionMode::None).max_children_per_line(3).row_spacing(4).column_spacing(4).build();
-        for (label, action) in [("Add Row", "ed.add-row"), ("Add Column", "ed.add-col")] {
-            tools.insert(&gtk::Button::builder().label(label).action_name(action).build(), -1);
+        let tools = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        tools.add_css_class("simple-data-tools");
+        let rows = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        for (label, action) in [("Add Row", "ed.add-row"), ("Delete Row", "ed.del-row"), ("Add Column", "ed.add-col"), ("Delete Column", "ed.del-col")] {
+            let b = gtk::Button::builder().label(label).action_name(action).focus_on_click(false).build();
+            rows.append(&b);
         }
+        tools.append(&gtk::ScrolledWindow::builder().child(&rows).vscrollbar_policy(gtk::PolicyType::Never).propagate_natural_height(true).build());
+        let files = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         // These controls have not yet been parented outside the standalone header.
         for (b, label) in [(&paste_b, "Paste"), (&import_b, "Import"), (&export_b, "Export Table")] {
             header.remove(b);
             b.set_label(label);
             b.set_focus_on_click(false);
-            tools.insert(b, -1);
+            files.append(b);
         }
         header.remove(&more);
-        more.set_label("Rows / Columns");
-        tools.insert(&more, -1);
+        tools.append(&files);
         header.remove(&sheets);
         body.append(&tools);
         body.append(&sheets);

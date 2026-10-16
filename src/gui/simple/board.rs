@@ -51,6 +51,7 @@ impl Board {
         } else {
             let mut f = Figure::new(1);
             f.axes().grid = true;
+            f.axes().origin_axes = true;
             f
         };
         let b = Rc::new(Self {

@@ -115,6 +115,7 @@ pub fn data_chart(grid: &[Vec<String>], chart: Chart, xcol: Option<usize>, ycol:
     let mut fig = Figure::new(1);
     let a = fig.axes();
     a.grid = true;
+    a.origin_axes = true;
     a.xlabel = xcol.and_then(|c| names.get(c)).cloned().unwrap_or_else(|| "Row number".into());
     a.ylabel = names.get(ycol).cloned().unwrap_or_else(|| "Value".into());
     let mut skipped = 0;

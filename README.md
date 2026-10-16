@@ -12,6 +12,9 @@ A calculator, Octave-style interpreter and plotter in one program, with a GTK 4 
 four-row keypad fixed along the bottom; **More functions** opens a second page, and **Hide
 keypad** makes more room. The interface starts light, in degrees, with decimal number bases.
 The **DEG/RAD** button changes the angle unit for both calculations and function graphs.
+Drag the **resize keypad** strip up or down to change its height in Simple or Advanced.
+Dragging it down gives the graph or data area more room; double-click the strip to reset.
+The focused strip also supports Up/Down and Home. Simple keypads include `x`, `y` and `=`.
 
 - **Calculator:** arithmetic, fractions, powers, roots and trigonometry, a live answer preview,
   and tap-to-reuse history. **Decimal result** changes the answer format. **Graph this** sends
@@ -28,6 +31,7 @@ The **DEG/RAD** button changes the angle unit for both calculations and function
   with fewer than two values). Missing, invalid and nonfinite cells are excluded and counted;
   line charts keep gaps. Decimal commas are accepted in cells. Export tables to CSV/TSV and
   charts through **Menu → Export chart** to PNG/SVG.
+  Compact table controls include **Delete Row** and **Delete Column**, acting on the selected cell.
 
 Tabs and mode switches keep your current work. **Advanced** opens the original calculator,
 Octave editor and tools; **Simple** returns to the classroom view. Advanced preferences are

@@ -277,6 +277,10 @@ impl Axes {
                 ext[k] = (ext[k].0.min(x), ext[k].1.max(x));
             }
         };
+        if self.origin_axes {
+            eat(0, &[0.0]);
+            eat(1, &[0.0]);
+        }
         for s in &self.series {
             match &s.data {
                 Data::Line { x, y } | Data::Fill { x, y } => {

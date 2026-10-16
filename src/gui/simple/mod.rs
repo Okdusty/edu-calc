@@ -31,9 +31,12 @@ pub const CSS: &str = "
 .simple .simple-result { font-size: 32px; font-weight: bold; }
 .simple .simple-card { background: #fff; border: 1px solid #d8e1ed; border-radius: 8px; padding: 10px; }
 .simple .simple-keypad { background: #e5ebf3; padding: 6px; }
-.simple .simple-keypad button { font-size: 22px; min-height: 56px; }
+.simple .simple-keypad button { font-size: 22px; min-height: 28px; transition: background-color 120ms ease-in-out; }
 .simple .simple-keypad .suggested-action { background: #226ccc; color: #fff; }
 .simple .simple-keypad .number { background: #fff; color: #182639; }
+.simple .simple-keypad .number:hover { background: #dce5ef; }
+.simple .simple-keypad .number:active { background: #c6d5e6; }
+.simple .simple-data-tools button { min-height: 36px; min-width: 0; padding: 0 8px; font-size: 15px; }
 .simple .simple-tabs button:checked { background: #226ccc; color: #fff; }
 .simple columnview { background: #fff; color: #182639; }
 .simple .simple-stats { background: #fff; padding: 10px; border-radius: 8px; }
@@ -79,6 +82,7 @@ pub struct Simple {
     stats: gtk::Label,
     selectors_busy: Cell<bool>,
     keypad: gtk::Box,
+    keypad_height: Rc<super::resize::KeypadHeight>,
     function_keys: gtk::Stack,
     more: gtk::ToggleButton,
     angle: gtk::ToggleButton,
@@ -254,9 +258,8 @@ impl Simple {
         keypad.add_css_class("simple-keypad");
         let function_keys = gtk::Stack::builder().hexpand(true).hhomogeneous(true).vhomogeneous(true).build();
         keypad.append(&function_keys);
-        let pad_scroll = gtk::ScrolledWindow::builder().child(&keypad).vscrollbar_policy(gtk::PolicyType::Never).propagate_natural_height(true).build();
-        pad_scroll.set_vexpand(false);
-        root.append(&pad_scroll);
+        let keypad_height = super::resize::KeypadHeight::new(&keypad, 256, 160, 260);
+        root.append(&keypad_height.root);
         let calc_rev = Arc::new(AtomicU64::new(0));
         let graph_rev = Arc::new(AtomicU64::new(0));
         let (sender, replies) = worker::start(calc_rev.clone(), graph_rev.clone());
@@ -291,6 +294,7 @@ impl Simple {
             stats,
             selectors_busy: Cell::new(false),
             keypad,
+            keypad_height,
             function_keys,
             more,
             angle: angle.clone(),
@@ -466,6 +470,7 @@ impl Simple {
     pub fn toggle_keypad(&self) {
         let show = !self.keypad.is_visible();
         self.keypad.set_visible(show);
+        self.keypad_height.root.set_visible(show);
         self.keypad_toggle.set_label(if show { "Hide keypad" } else { "Show keypad" });
         self.entry.set_input_hints(if show { gtk::InputHints::INHIBIT_OSK } else { gtk::InputHints::NONE });
         self.data.set_keypad_shown(show);
@@ -513,13 +518,13 @@ impl Simple {
                 "basic",
                 &[
                     ("x", "x"),
+                    ("y", "y"),
                     ("x²", "□²"),
                     ("aᵇ", "□^□"),
-                    ("√", "√(□)"),
                     ("(", "("),
                     (")", ")"),
                     ("a/b", "□/□"),
-                    ("%", "%"),
+                    ("√", "√(□)"),
                     ("sin", "sin(□)"),
                     ("cos", "cos(□)"),
                     ("tan", "tan(□)"),
@@ -536,7 +541,7 @@ impl Simple {
                     ("abs", "abs(□)"),
                     ("∛", "∛(□)"),
                     ("1/x", "1/□"),
-                    ("x³", "□³"),
+                    ("%", "%"),
                     ("asin", "asin(□)"),
                     ("acos", "acos(□)"),
                     ("atan", "atan(□)"),
@@ -544,7 +549,7 @@ impl Simple {
                     ("ln", "ln(□)"),
                     ("log₁₀", "log10(□)"),
                     ("!", "!"),
-                    (",", ","),
+                    ("y", "y"),
                     ("←", "@left"),
                     ("→", "@right"),
                     ("Next □", "@slot"),
@@ -573,7 +578,7 @@ impl Simple {
                 ("2", "2"),
                 ("3", "3"),
                 ("−", "−"),
-                ("(", "("),
+                ("=", "="),
                 ("0", "0"),
                 (".", "."),
                 ("Enter", "@enter"),
@@ -591,7 +596,7 @@ impl Simple {
             let b = gtk::Button::with_label(face);
             b.set_focus_on_click(false);
             b.set_hexpand(true);
-            b.set_vexpand(false);
+            b.set_vexpand(true);
             if action.chars().all(|c| c.is_ascii_digit()) {
                 b.add_css_class("number");
             }
@@ -1030,7 +1035,21 @@ mod tests {
         screenshot(&ui, "simple-calculator-1366");
 
         s.select(SimpleTab::Graph);
+        settle();
+        let graph_height = s.graph.area.height();
+        let workspace_height = s.root.first_child().unwrap().height();
+        s.keypad_height.set_height(160);
+        settle();
+        assert!(s.root.first_child().unwrap().height() > workspace_height, "shrinking the keypad must expose more workspace");
+        assert!(s.graph.area.height() >= graph_height);
+        s.keypad_height.set_height(256);
+        settle();
         let first = s.graph_rows.borrow()[0].clone();
+        first.entry.set_text("");
+        s.press("y");
+        s.press("=");
+        s.press("x");
+        assert_eq!(first.entry.text(), "y=x");
         first.entry.set_text("y = x²");
         s.add_graph("y = 2x + 1");
         pump_until(|| s.graph.figure.borrow().axes[0].series.len() == 2);
@@ -1074,6 +1093,13 @@ mod tests {
             assert!(s.stats.text().contains("standard deviation: 1"));
         }
         screenshot(&ui, "simple-data-1366");
+        assert!(s.data_board.figure.borrow().axes[0].origin_axes);
+        s.data.root.activate_action("ed.del-row", None).unwrap();
+        settle();
+        assert!(s.stats.text().contains("Mean: 1.5"));
+        s.data.root.activate_action("ed.del-col", None).unwrap();
+        settle();
+        assert_eq!(s.data.grid()[0].len(), 1);
         let table = s.data.grid();
         super::super::show_simple(&ui, false);
         settle();
