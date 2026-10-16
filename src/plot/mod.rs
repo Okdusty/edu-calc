@@ -217,6 +217,8 @@ pub struct Axes {
     pub keypoints: bool,
     /// `axis equal`: the renderer widens one range so a unit is as long on x as on y (2D, linear)
     pub equal: bool,
+    /// Classroom graph paper: emphasize x=0 and y=0 when visible.
+    pub origin_axes: bool,
 }
 
 /// Text placed at data coords (z ignored in 2D). Like all plot text it may use math markup.
@@ -251,6 +253,7 @@ impl Axes {
             notes: vec![],
             keypoints: false,
             equal: false,
+            origin_axes: false,
         }
     }
     /// Add a series, replacing existing ones unless `hold` is on.

@@ -585,7 +585,7 @@ fn draw(ui: &Ui, area: &gtk::DrawingArea, cr: &cairo::Context, w: i32, h: i32) {
 
 /// Render at `scale` x the widget size into a cairo surface drawn back at widget size, plus the
 /// axes frames in widget pixels.
-fn surface(fig: &Figure, theme: &Theme, w: i32, h: i32, scale: f64) -> Result<(cairo::ImageSurface, Vec<Frame>), String> {
+pub(super) fn surface(fig: &Figure, theme: &Theme, w: i32, h: i32, scale: f64) -> Result<(cairo::ImageSurface, Vec<Frame>), String> {
     let (pw, ph) = (((w as f64 * scale).round() as i32).max(1), ((h as f64 * scale).round() as i32).max(1));
     let (rgb, frames) = crate::plot::render::render_frames(fig, theme, pw as u32, ph as u32)?;
     let stride = cairo::Format::ARgb32.stride_for_width(pw as u32).map_err(|e| e.to_string())?;

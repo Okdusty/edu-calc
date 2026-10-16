@@ -1107,7 +1107,7 @@ fn quantiles(v: &[f64]) -> Option<(f64, f64)> {
 
 /// Break a sampled curve at jumps (tan, 1/x, floor) so no vertical lines get drawn through
 /// poles: a big step that flips sign or dwarfs both neighbouring steps.
-pub(super) fn break_jumps(xs: &[f64], ys: &[f64]) -> (Vec<f64>, Vec<f64>) {
+pub(crate) fn break_jumps(xs: &[f64], ys: &[f64]) -> (Vec<f64>, Vec<f64>) {
     let Some((lo, hi)) = quantiles(ys) else { return (xs.to_vec(), ys.to_vec()) };
     let d: Vec<f64> = ys.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
     let mut sorted: Vec<f64> = d.iter().copied().filter(|v| v.is_finite()).collect();
