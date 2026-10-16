@@ -305,6 +305,13 @@ pub fn set_options(o: &Options) {
 
 /// set_options with the lock held.
 fn apply(o: &Options) {
+    apply_raw(o);
+    *OPTIONS.lock().unwrap_or_else(|e| e.into_inner()) = Some(o.clone());
+}
+
+/// Change only the shim while holding PUSHED; scoped worker options must not be saved
+/// by a simultaneous GUI close or exposed to the Advanced options menu.
+fn apply_raw(o: &Options) {
     // index in the shim's tables, where 0 is the default
     let ix = |v: &str, all: &[&str]| all.iter().position(|a| *a == v).unwrap_or(0) as c_int;
     unsafe {
@@ -320,7 +327,6 @@ fn apply(o: &Options) {
             o.bits as c_int,
         )
     };
-    *OPTIONS.lock().unwrap_or_else(|e| e.into_inner()) = Some(o.clone());
 }
 
 /// `set KEY VALUE` (qalc's settings command; KEY may be several words: `set input base hex`) ->
@@ -656,6 +662,45 @@ pub fn sample(expr: &str, var: &str, lo: f64, hi: f64, n: usize) -> Result<(Vec<
     Ok((xs, ys))
 }
 
+/// Plain, sendable answer for the classroom worker. PURE evaluation never changes ans,
+/// variables or files. Options are scoped to the call, including on an error.
+#[derive(Clone, Debug)]
+pub struct ClassroomAnswer {
+    pub input: String,
+    pub result: String,
+    pub approx: String,
+    pub free_vars: Vec<String>,
+}
+
+pub fn classroom_eval(expr: &str, opts: &Options) -> Result<ClassroomAnswer, String> {
+    let _g = lock();
+    let previous = options();
+    apply_raw(opts);
+    let result = raw_calc(expr, TIMEOUT_MS, PURE).map(|(a, _)| ClassroomAnswer {
+        input: a.input, result: a.result, approx: a.approx.unwrap_or_default(), free_vars: a.free_vars,
+    });
+    apply_raw(&previous);
+    result
+}
+
+/// Explicit y=f(x), sampled without changing the advanced calculator's options.
+pub fn classroom_curve(expr: &str, opts: &Options, lo: f64, hi: f64) -> Result<(Vec<f64>, Vec<f64>), String> {
+    let _g = lock();
+    let previous = options();
+    apply_raw(opts);
+    let result = (|| {
+        let (answer, _) = raw_calc(expr, PREVIEW_MS, PURE)?;
+        if answer.free_vars.iter().any(|v| v != "x") {
+            return Err("Use a function of x, for example y = 2x + 1.".into());
+        }
+        let xs = linspace(lo, hi, 1001);
+        let ys = raw_sample(expr, "x", "", &xs, &xs)?;
+        Ok(crate::plot::builtins::break_jumps(&xs, &ys))
+    })();
+    apply_raw(&previous);
+    result
+}
+
 /// `plot(...)` at top level -> its arguments.
 fn plot_args(expr: &str) -> Option<Vec<String>> {
     let inner = expr.trim().strip_prefix("plot")?.trim_start().strip_prefix('(')?.strip_suffix(')')?;
@@ -807,6 +852,27 @@ fn synced<T>(it: &Interp, expr: &str, f: impl FnOnce(&str) -> Result<T, String>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classroom_options_and_curves() {
+        let previous = options();
+        let degrees = Options { angle: "deg".into(), ..Default::default() };
+        assert_eq!(classroom_eval("sin(30)", &degrees).unwrap().result, "1/2");
+        assert_eq!(classroom_eval("sin(pi/2)", &Options::default()).unwrap().result, "1");
+        assert_eq!(classroom_eval("3/4 + 1/2", &degrees).unwrap().result, "5/4");
+        assert!(classroom_eval("sin(", &degrees).is_err());
+        assert_eq!(options(), previous);
+        let (xs, ys) = classroom_curve("x²", &degrees, -2.0, 2.0).unwrap();
+        assert_eq!(xs.len(), ys.len());
+        assert!((ys[0] - 4.0).abs() < 1e-9);
+        let (_, ys) = classroom_curve("sin(x)", &degrees, 0.0, 90.0).unwrap();
+        assert!((ys.last().unwrap() - 1.0).abs() < 1e-9);
+        let (_, ys) = classroom_curve("1/x", &degrees, -1.0, 1.0).unwrap();
+        assert!(ys.iter().any(|y| y.is_nan()));
+        assert!(classroom_curve("x+y", &degrees, -1.0, 1.0).is_err());
+        assert!(classroom_curve("3", &degrees, -1.0, 1.0).unwrap().1.iter().all(|y| *y == 3.0));
+        assert_eq!(options(), previous);
+    }
 
     fn ok(e: &str) -> Answer {
         calc(e).unwrap_or_else(|err| panic!("{e}: {err}"))

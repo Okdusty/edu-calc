@@ -4,11 +4,44 @@ A calculator, Octave-style interpreter and plotter in one program, with a GTK 4 
 
 **Status: beta.** Snapshot builds for Linux (AppImage) and Windows (64-bit zip) are on the releases page.
 
-![Calculator mode: answers with units and exact forms, autocomplete, and a cubic with its roots, extrema and point of symmetry marked](demo/gui-calc.png)
+![Advanced calculator: answers with units and exact forms, autocomplete, and a cubic with its roots, extrema and point of symmetry marked](demo/gui-calc.png)
 
 ### What it does
 
-**Calculator mode** (the default) takes plain math: `5 km to mi`, `planck × c / (500 nm) to eV`, `integrate(e^(-x^2), -infinity, infinity)` gives `√(π)`, `solve(x^3 - 6x^2 + 11x = 6)`, `eig([2 1; 1 3])` gives the exact eigenvalues (5 + √5)/2 and 5/2 − √5/2. Typing a name shows completions with their signature and a one-line description; Tab or Return inserts the call with `□` slots for its arguments. An on-screen keypad has General, Programming (BIN/OCT/DEC/HEX, AND, OR, XOR, NOT, shifts, rotate), Algebra, Custom and Number pad modes, for touchscreens as much as for mice. Angle unit, exact or approximate results, precision, fractions, notation, result base, two's complement and bit width are in the options menu, or typed: `set angle deg`.
+**Simple mode** opens by default for classroom smartboards. It has three large tabs and a
+four-row keypad fixed along the bottom; **More functions** opens a second page, and **Hide
+keypad** makes more room. The interface starts light, in degrees, with decimal number bases.
+The **DEG/RAD** button changes the angle unit for both calculations and function graphs.
+Drag the **resize keypad** strip up or down to change its height in Simple or Advanced.
+Dragging it down gives the graph or data area more room; double-click the strip to reset.
+The focused strip also supports Up/Down and Home. Simple keypads include `x`, `y` and `=`.
+
+- **Calculator:** arithmetic, fractions, powers, roots and trigonometry, a live answer preview,
+  and tap-to-reuse history. **Decimal result** changes the answer format. **Graph this** sends
+  a function of `x` to the Graph tab. Use **Next □** to move through a function key's arguments.
+- **Graph:** enter several functions such as `y = x²`, `2x + 1`, or `sin(x)`. Each row has its
+  own color and Show/Delete controls. Curves update after typing; drag to pan, pinch or use
+  Zoom to zoom, and tap a curve for coordinates. **Points** shows the existing key-point
+  annotations. This view supports explicit functions of `x`, not implicit equations,
+  inequalities, sliders or 3-D graphs.
+- **Data:** enter or paste a numeric table, or import CSV/TSV/text/XLSX/XLS/ODS. Pick Scatter,
+  Line, Bar or Histogram and the columns to use. A histogram uses the selected Y/values
+  column; other charts can use row numbers instead of X. Statistics show the selected
+  column's count, mean, median, minimum, maximum and sample standard deviation (undefined
+  with fewer than two values). Missing, invalid and nonfinite cells are excluded and counted;
+  line charts keep gaps. Decimal commas are accepted in cells. Export tables to CSV/TSV and
+  charts through **Menu → Export chart** to PNG/SVG.
+  Compact table controls include **Delete Row** and **Delete Column**, acting on the selected cell.
+
+Tabs and mode switches keep your current work. **Advanced** opens the original calculator,
+Octave editor and tools; **Simple** returns to the classroom view. Advanced preferences are
+kept separately. Normal launches always return to Simple → Calculator; opening a `.m` script
+explicitly still opens Octave. Calculation history is saved as before; graph expressions and
+tables last for the current window only, so export anything you want to keep before closing.
+
+The following features are available in **Advanced**:
+
+**Calculator mode** takes plain math: `5 km to mi`, `planck × c / (500 nm) to eV`, `integrate(e^(-x^2), -infinity, infinity)` gives `√(π)`, `solve(x^3 - 6x^2 + 11x = 6)`, `eig([2 1; 1 3])` gives the exact eigenvalues (5 + √5)/2 and 5/2 − √5/2. Typing a name shows completions with their signature and a one-line description; Tab or Return inserts the call with `□` slots for its arguments. An on-screen keypad has General, Programming (BIN/OCT/DEC/HEX, AND, OR, XOR, NOT, shifts, rotate), Algebra, Custom and Number pad modes, for touchscreens as much as for mice. Angle unit, exact or approximate results, precision, fractions, notation, result base, two's complement and bit width are in the options menu, or typed: `set angle deg`.
 
 Answers that can be drawn get a **Visualize** button: a definite integral as its shaded area, `solve` as the curve with the roots marked, a derivative next to the original function, a matrix as a heatmap, eigenvalues as the transformation they describe. Functions of one variable get their key points labelled: roots, y-intercept, maxima, minima, inflection points, the vertex of a parabola, and the symmetry (even, odd, axis `x = h` or a point).
 
@@ -71,7 +104,7 @@ qcalcp tui
 
 | GUI | |
 |---|---|
-| F2 | calculator ⇄ Octave |
+| F2 | Simple → Advanced; in Advanced, calculator ⇄ Octave |
 | F9 | keypad on/off (mode menu in the header) |
 | Tab, Return | accept a completion; Tab also moves between `□` slots |
 | Ctrl+Return, F5 | run the script or selection |
@@ -94,6 +127,23 @@ Files live in `~/.config/qcalcp/` (Windows: `%LOCALAPPDATA%\qcalcp\`) and are cr
 - `rc.m`: Octave code run at startup
 - `addons/*.py`: Python functions callable from Octave
 - `history.txt`: calculator history
+
+### Development checks
+
+Run `cargo test --locked -- --test-threads=1` and `cargo build --locked`. On Windows/MSYS2,
+libqalculate's definitions must be beside the executable: copy the contents of
+`$MINGW_PREFIX/share/qalculate/` into `target/debug/deps/definitions/` for tests and
+`target/debug/definitions/` for the development app. Keep the UCRT64 bin directory on PATH.
+The release workflow builds and smoke-tests packages on both Linux and Windows.
+With the MSYS2 libqalculate 5.13.1 package, the existing `qalc::tests::programming`
+test fails on `bitrot(1, 1)` (an invalid bit-width bound); this also occurs on the
+unchanged code before Simple mode.
+
+An optional display-based test exercises the Simple UI and writes screenshots/exports under
+`target/`. Run it with an isolated configuration directory so it doesn't change your history:
+`XDG_CONFIG_HOME="$PWD/target/ui-test-config" cargo test classroom_ui_smoke -- --ignored --test-threads=1`.
+For a small logical viewport at 200% scaling, also set `GDK_SCALE=2 QCALCP_UI_WIDTH=960
+QCALCP_UI_HEIGHT=540`. The workspace scrolls when necessary while the keypad stays reachable.
 
 ### Known gaps
 

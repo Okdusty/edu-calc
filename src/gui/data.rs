@@ -22,9 +22,14 @@ use super::Ui;
 use crate::builtins::io::{self, Grid};
 use crate::value::{Matrix, Value};
 
-struct Ed {
+pub(super) struct Ed {
     ui: Rc<Ui>,
     win: gtk::Window,
+    pub root: gtk::Box,
+    embedded: bool,
+    changed: RefCell<Option<Box<dyn Fn()>>>,
+    active: RefCell<Option<(gtk::Entry, gtk::ListItem, usize)>>,
+    keypad_shown: Cell<bool>,
     cv: gtk::ColumnView,
     /// one glib::BoxedAnyObject(Vec<String>) per row, each `cols` long; row 0 = column names
     store: gio::ListStore,
@@ -46,11 +51,63 @@ struct Ed {
 }
 
 impl Ed {
-    fn grid(&self) -> Grid {
+    pub fn grid(&self) -> Grid {
         (0..self.store.n_items())
             .filter_map(|i| self.store.item(i).and_downcast::<glib::BoxedAnyObject>())
             .map(|o| o.borrow::<Vec<String>>().clone())
             .collect()
+    }
+
+    pub fn connect_changed(&self, f: impl Fn() + 'static) {
+        *self.changed.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn is_dirty(&self) -> bool { self.dirty.get() }
+    pub fn discard(&self) { self.dirty.set(false); }
+
+    pub fn focus(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        glib::idle_add_local_once(move || if let Some(ed) = weak.upgrade().filter(|ed| ed.root.is_mapped()) {
+            let active = ed.active.borrow().clone();
+            if let Some((entry, _, _)) = active.filter(|(_, item, col)| item.position() != gtk::INVALID_LIST_POSITION && ed.cur.get() == (item.position(), *col)) {
+                entry.grab_focus_without_selecting();
+            } else {
+                let (r, c) = ed.cur.get();
+                go(&ed, r as i64, c as i64);
+            }
+        });
+    }
+
+    pub fn set_keypad_shown(&self, shown: bool) {
+        self.keypad_shown.set(shown);
+        if let Some((entry, item, _)) = self.active.borrow().as_ref() {
+            entry.set_input_hints(if shown && item.position() > 0 { gtk::InputHints::INHIBIT_OSK } else { gtk::InputHints::NONE });
+        }
+    }
+
+    pub fn press(self: &Rc<Self>, act: &super::keypad::Act) {
+        let Some((entry, item, col)) = self.active.borrow().clone() else {
+            let (r, c) = self.cur.get();
+            go(self, r as i64, c as i64);
+            let weak = Rc::downgrade(self);
+            let act = act.clone();
+            glib::idle_add_local_once(move || if let Some(ed) = weak.upgrade() {
+                if ed.active.borrow().is_some() { ed.press(&act); }
+            });
+            return;
+        };
+        // ColumnView recycles entries. A stale widget must never edit another row.
+        if item.position() == gtk::INVALID_LIST_POSITION || self.cur.get() != (item.position(), col) {
+            self.active.borrow_mut().take();
+            self.press(act);
+            return;
+        }
+        entry.grab_focus_without_selecting();
+        if matches!(act, super::keypad::Act::Enter) {
+            go(self, item.position() as i64 + 1, col as i64);
+        } else {
+            super::keypad::press(super::keypad::Target::Entry(&entry, false), act);
+        }
     }
 
     /// Column names and data rows: trailing blank rows and columns dropped, decimal commas made points.
@@ -91,13 +148,22 @@ impl Ed {
 
 /// Open the editor: on workspace variable `var` (a numeric matrix), else an empty sheet.
 pub fn open(ui: &Rc<Ui>, var: Option<&str>) {
+    create(ui, var, false);
+}
+
+pub(super) fn embedded(ui: &Rc<Ui>) -> Rc<Ed> {
+    create(ui, None, true).expect("empty data editor")
+}
+
+fn create(ui: &Rc<Ui>, var: Option<&str>, embedded: bool) -> Option<Rc<Ed>> {
     let start: Grid = match var {
+        None if embedded => std::iter::once(vec!["X".into(), "Y".into()]).chain(vec![vec![String::new(); 2]; 10]).collect(),
         None => vec![vec![String::new(); 3]; 11],
         Some(n) => {
             let m = match ui.interp.borrow().vars.get(n) {
                 Some(Value::Num(m) | Value::Bool(m)) => m.clone(),
-                Some(v) => return ui.print(&format!("Data Editor: {n} is {}, it edits real matrices\n", v.summary()), true),
-                None => return ui.print(&format!("Data Editor: no variable '{n}'\n"), true),
+                Some(v) => { ui.print(&format!("Data Editor: {n} is {}, it edits real matrices\n", v.summary()), true); return None; }
+                None => { ui.print(&format!("Data Editor: no variable '{n}'\n"), true); return None; }
             };
             let cell = |x: f64| if x.is_nan() { String::new() } else { io::fmt_num(x) };
             let body = (0..m.rows).map(|i| (0..m.cols).map(|j| cell(m.get(i, j))).collect());
@@ -141,10 +207,33 @@ pub fn open(ui: &Rc<Ui>, var: Option<&str>) {
     let stats_box = gtk::ScrolledWindow::builder().child(&stats).vscrollbar_policy(gtk::PolicyType::Never).visible(false).build();
     let status = gtk::Label::builder().xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).margin_start(8).margin_end(8).margin_top(2).margin_bottom(4).build();
     let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    if embedded {
+        let tools = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        tools.add_css_class("simple-data-tools");
+        let rows = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        for (label, action) in [("Add Row", "ed.add-row"), ("Delete Row", "ed.del-row"), ("Add Column", "ed.add-col"), ("Delete Column", "ed.del-col")] {
+            let b = gtk::Button::builder().label(label).action_name(action).focus_on_click(false).build();
+            rows.append(&b);
+        }
+        tools.append(&gtk::ScrolledWindow::builder().child(&rows).vscrollbar_policy(gtk::PolicyType::Never).propagate_natural_height(true).build());
+        let files = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        // These controls have not yet been parented outside the standalone header.
+        for (b, label) in [(&paste_b, "Paste"), (&import_b, "Import"), (&export_b, "Export Table")] {
+            header.remove(b);
+            b.set_label(label);
+            b.set_focus_on_click(false);
+            files.append(b);
+        }
+        header.remove(&more);
+        tools.append(&files);
+        header.remove(&sheets);
+        body.append(&tools);
+        body.append(&sheets);
+    }
     body.append(&gtk::ScrolledWindow::builder().child(&cv).vexpand(true).build());
     body.append(&stats_box);
     body.append(&status);
-    let win = gtk::Window::builder()
+    let win = if embedded { ui.win.clone().upcast() } else { gtk::Window::builder()
         .title("Data Editor")
         .transient_for(&ui.win)
         .destroy_with_parent(true)
@@ -152,12 +241,17 @@ pub fn open(ui: &Rc<Ui>, var: Option<&str>) {
         .default_height(600)
         .titlebar(&header)
         .child(&body)
-        .build();
-    win.add_css_class("data-editor");
+        .build() };
+    if !embedded { win.add_css_class("data-editor"); }
 
     let ed = Rc::new(Ed {
         ui: ui.clone(),
         win,
+        root: body,
+        embedded,
+        changed: RefCell::new(None),
+        active: RefCell::new(None),
+        keypad_shown: Cell::new(embedded),
         cv,
         store,
         cols: Cell::new(0),
@@ -218,7 +312,8 @@ pub fn open(ui: &Rc<Ui>, var: Option<&str>) {
         a.connect_activate(move |_, _| f());
         group.add_action(&a);
     }
-    ed.win.insert_action_group("ed", Some(&group));
+    ed.root.insert_action_group("ed", Some(&group));
+    if !embedded { ed.win.insert_action_group("ed", Some(&group)); }
 
     // Ctrl+V anywhere in the window: a block fills cells, one value goes into the focused entry
     let keys = gtk::EventControllerKey::new();
@@ -231,8 +326,9 @@ pub fn open(ui: &Rc<Ui>, var: Option<&str>) {
         }
         glib::Propagation::Proceed
     });
-    ed.win.add_controller(keys);
+    ed.root.add_controller(keys);
 
+    if !embedded {
     let keep = RefCell::new(Some(ed.clone()));
     ed.win.connect_close_request(move |_| {
         let Some(ed) = keep.borrow().clone() else { return glib::Propagation::Proceed };
@@ -243,10 +339,12 @@ pub fn open(ui: &Rc<Ui>, var: Option<&str>) {
         keep.take();
         glib::Propagation::Proceed
     });
+    }
 
     set_grid(&ed, start, (1, 0));
     refresh(&ed);
-    ed.win.present();
+    if !embedded { ed.win.present(); }
+    Some(ed)
 }
 
 fn set_class(w: &impl IsA<gtk::Widget>, class: &str, on: bool) {
@@ -265,6 +363,7 @@ fn quote(s: &str) -> String {
 /// Replace the grid (rows padded to the widest, at least one data row; columns rebuilt if needed),
 /// then focus cell `at` once the new rows have widgets.
 fn set_grid(ed: &Rc<Ed>, mut g: Grid, at: (i64, i64)) {
+    ed.active.borrow_mut().take();
     let w = g.iter().map(Vec::len).max().unwrap_or(0).max(1);
     g.resize(g.len().max(2), vec![]);
     for r in &mut g {
@@ -284,7 +383,7 @@ fn set_grid(ed: &Rc<Ed>, mut g: Grid, at: (i64, i64)) {
     }
     let w = Rc::downgrade(ed);
     glib::idle_add_local_once(move || {
-        if let Some(ed) = w.upgrade() {
+        if let Some(ed) = w.upgrade().filter(|ed| ed.root.is_mapped()) {
             go(&ed, at.0.min(ed.store.n_items() as i64 - 1), at.1);
         }
     });
@@ -329,10 +428,13 @@ fn cell_factory(ed: &Rc<Ed>, c: usize) -> gtk::SignalListItemFactory {
             }
         });
         let (w2, it) = (w.clone(), item.downgrade());
+        let focused_entry = e.clone();
         let fc = gtk::EventControllerFocus::new();
         fc.connect_enter(move |_| {
             if let (Some(ed), Some(item)) = (w2.upgrade(), it.upgrade()) {
                 ed.cur.set((item.position(), c));
+                focused_entry.set_input_hints(if ed.embedded && ed.keypad_shown.get() && item.position() > 0 { gtk::InputHints::INHIBIT_OSK } else { gtk::InputHints::NONE });
+                *ed.active.borrow_mut() = Some((focused_entry.clone(), item, c));
             }
         });
         e.add_controller(fc);
@@ -353,6 +455,12 @@ fn cell_factory(ed: &Rc<Ed>, c: usize) -> gtk::SignalListItemFactory {
             glib::Propagation::Stop
         });
         e.add_controller(keys);
+        let (w2, it) = (w.clone(), item.downgrade());
+        e.connect_activate(move |_| {
+            if let (Some(ed), Some(item)) = (w2.upgrade(), it.upgrade()) {
+                go(&ed, item.position() as i64 + 1, c as i64);
+            }
+        });
     });
     f.connect_bind(move |_, obj| {
         let Some(item) = obj.downcast_ref::<gtk::ListItem>() else { return };
@@ -371,9 +479,9 @@ fn cell_factory(ed: &Rc<Ed>, c: usize) -> gtk::SignalListItemFactory {
 /// Names row bold with a hint; data cells that aren't numbers flagged.
 fn style(e: &gtk::Entry, names: bool) {
     let t = e.text();
-    let text = !names && !t.trim().is_empty() && io::to_num(&t, true).is_none();
+    let text = !names && !t.trim().is_empty() && !io::to_num(&t, true).is_some_and(f64::is_finite);
     e.set_placeholder_text(names.then_some("name"));
-    e.set_tooltip_text(text.then_some("Not a number: NaN in the workspace"));
+    e.set_tooltip_text(text.then_some("Enter a finite number. This cell is excluded from charts and statistics."));
     set_class(e, "heading", names);
     set_class(e, "warning", text);
 }
@@ -421,6 +529,7 @@ fn refresh(ed: &Ed) {
     if ed.stats_box.is_visible() {
         ed.stats.set_text(&stats(&names, &m));
     }
+    if let Some(f) = &*ed.changed.borrow() { f(); }
 }
 
 /// Focus cell (r, c); Tab past the last column wraps to the next row, moving past the last row adds one.
@@ -492,7 +601,7 @@ fn paste(ed: &Rc<Ed>) {
         let Some(ed) = w.upgrade() else { return };
         let Ok(Some(text)) = r else { return ed.say("Paste: no text on the clipboard", true) };
         let block = io::parse_text(&text, None);
-        let entry = gtk::prelude::RootExt::focus(&ed.win).and_then(|f| f.ancestor(gtk::Entry::static_type())).and_downcast::<gtk::Entry>();
+        let entry = ed.active.borrow().as_ref().filter(|(_, item, c)| item.position() != gtk::INVALID_LIST_POSITION && ed.cur.get() == (item.position(), *c)).map(|(e, _, _)| e.clone());
         if let ([row], Some(e)) = (&block[..], entry)
             && let [v] = &row[..]
         {
@@ -547,7 +656,7 @@ fn confirm(ed: &Rc<Ed>, then: impl FnOnce(&Rc<Ed>) + 'static) {
     }
     let d = gtk::AlertDialog::builder()
         .message("Discard the edited data?")
-        .detail("It isn't in the workspace or a file yet.")
+        .detail(if ed.embedded { "Export the table first if you want to keep it." } else { "It isn't in the workspace or a file yet." })
         .buttons(["Cancel", "Discard"])
         .cancel_button(0)
         .default_button(0)

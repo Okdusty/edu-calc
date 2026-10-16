@@ -172,7 +172,7 @@ pub fn attach(ui: &Rc<Ui>) {
     *c.saved.borrow_mut() = saved;
 }
 
-fn history_path() -> PathBuf {
+pub(super) fn history_path() -> PathBuf {
     crate::config_dir().join("history.txt")
 }
 
@@ -270,6 +270,8 @@ pub fn run(ui: &Rc<Ui>) {
         let s = Saved { expr: expr.into(), input: a.input.clone(), result: a.result.clone(), approx: a.approx.clone().unwrap_or_default() };
         let text = {
             let mut saved = c.saved.borrow_mut();
+            // The Simple shell may have appended answers since this view was built.
+            *saved = parse_history(&std::fs::read_to_string(history_path()).unwrap_or_default());
             saved.push(s);
             let extra = saved.len().saturating_sub(KEEP);
             saved.drain(..extra);
@@ -433,13 +435,13 @@ fn octave_chip(ui: &Rc<Ui>, code: &str) -> gtk::MenuButton {
 }
 
 /// history.txt: one answer per line, tab-separated fields of `Saved`.
-fn history_text(saved: &[Saved]) -> String {
+pub(super) fn history_text(saved: &[Saved]) -> String {
     let clean = |s: &str| s.replace(['\t', '\n', '\r'], " ");
     saved.iter().map(|s| format!("{}\t{}\t{}\t{}\n", clean(&s.expr), clean(&s.input), clean(&s.result), clean(&s.approx))).collect()
 }
 
 /// Last KEEP well-formed lines (at least input, math view, result).
-fn parse_history(text: &str) -> Vec<Saved> {
+pub(super) fn parse_history(text: &str) -> Vec<Saved> {
     let all: Vec<Saved> = text
         .lines()
         .filter_map(|l| {

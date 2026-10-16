@@ -62,6 +62,8 @@ mod complete;
 mod config;
 mod data;
 mod keypad;
+mod resize;
+mod simple;
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -93,6 +95,8 @@ headerbar button, .plot-bar button { min-height: 36px; min-width: 36px; }
 .keypad { padding: 4px; }
 .keypad button { min-height: 44px; min-width: 40px; padding-left: 4px; padding-right: 4px; font-size: 1.15em; }
 .keypad .op { font-weight: bold; }
+.keypad-height-grip { min-height: 22px; background: alpha(#718096, 0.14); font-size: 12px; }
+.keypad-height-grip:hover, .keypad-height-grip:focus { background: alpha(#718096, 0.3); }
 .calc-bases { font-size: 0.9em; }
 .completion row { padding: 2px 6px; }
 .completion .desc { font-size: 0.85em; }
@@ -119,6 +123,10 @@ enum Focus {
 
 struct Ui {
     win: gtk::ApplicationWindow,
+    shell: gtk::Stack,
+    headers: gtk::Stack,
+    simple: RefCell<Option<Rc<simple::Simple>>>,
+    simple_mode: Cell<bool>,
     interp: RefCell<Interp>,
     cfg: RefCell<Config>,
     file: RefCell<Option<PathBuf>>,
@@ -191,7 +199,7 @@ pub fn run(script: Option<PathBuf>) -> ExitCode {
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
     let script = RefCell::new(script);
-    app.connect_activate(move |app| build(app, script.take()));
+    app.connect_activate(move |app| { build(app, script.take()); });
     app.run_with_args(&["qcalcp"]).into()
 }
 
@@ -199,7 +207,7 @@ fn ini_path() -> PathBuf {
     crate::config_dir().join("qcalcp.ini")
 }
 
-fn build(app: &gtk::Application, script: Option<PathBuf>) {
+fn build(app: &gtk::Application, script: Option<PathBuf>) -> Rc<Ui> {
     let (mut cfg, warnings) = Config::load(&ini_path());
     let (opts, opt_warn) = qalc::Options::load_ini(&ini_path());
     qalc::set_options(&opts);
@@ -298,13 +306,19 @@ fn build(app: &gtk::Application, script: Option<PathBuf>) {
         header.pack_end(&b);
     }
 
+    let simple_button = gtk::Button::with_label("Simple");
+    header.pack_start(&simple_button);
+    let shell = gtk::Stack::builder().vhomogeneous(false).hhomogeneous(false).build();
+    shell.add_named(&main, Some("advanced"));
+    let headers = gtk::Stack::builder().vhomogeneous(false).hhomogeneous(false).build();
+    headers.add_named(&header, Some("advanced"));
     let win = gtk::ApplicationWindow::builder()
         .application(app)
         .default_width(cfg.width)
         .default_height(cfg.height)
         .maximized(cfg.maximized)
-        .titlebar(&header)
-        .child(&main)
+        .titlebar(&headers)
+        .child(&shell)
         .build();
     win.add_css_class("qcalcp");
 
@@ -315,6 +329,10 @@ fn build(app: &gtk::Application, script: Option<PathBuf>) {
     let editor_pop = Popup::new(complete::Target::Text(editor.clone()), Lang::Octave);
     let ui = Rc::new(Ui {
         win,
+        shell,
+        headers,
+        simple: RefCell::new(None),
+        simple_mode: Cell::new(false),
         interp: RefCell::new(interp),
         cfg: RefCell::new(cfg),
         file: RefCell::new(None),
@@ -349,6 +367,9 @@ fn build(app: &gtk::Application, script: Option<PathBuf>) {
         plot_side,
         css_monitor: RefCell::new(None),
     });
+
+    let u = Rc::downgrade(&ui);
+    simple_button.connect_clicked(move |_| if let Some(ui) = u.upgrade() { show_simple(&ui, true); });
 
     let u = ui.clone();
     ui.keypad.connect(move |act| key_press(&u, act));
@@ -449,6 +470,15 @@ fn build(app: &gtk::Application, script: Option<PathBuf>) {
     ui.editor.buffer().connect_modified_changed(move |_| update_title(&u));
     let u = ui.clone();
     ui.win.connect_close_request(move |_| {
+        if let Some(s) = u.simple.borrow().as_ref().filter(|s| s.data.is_dirty()) {
+            let data = s.data.clone();
+            let win = u.win.clone();
+            let dialog = gtk::AlertDialog::builder().message("Close without exporting the data?")
+                .detail("The classroom table has unsaved edits. Cancel to export it first.")
+                .buttons(["Cancel", "Close"]).cancel_button(0).default_button(0).modal(true).build();
+            dialog.choose(Some(&u.win), None::<&gio::Cancellable>, move |r| if r == Ok(1) { data.discard(); win.close(); });
+            return glib::Propagation::Stop;
+        }
         if u.editor.buffer().is_modified() {
             confirm_discard(&u, |u| {
                 u.editor.buffer().set_modified(false);
@@ -462,14 +492,20 @@ fn build(app: &gtk::Application, script: Option<PathBuf>) {
 
     update_title(&ui);
     sync(&ui);
+    let simple = simple::Simple::new(&ui);
+    ui.shell.add_named(&simple.root, Some("simple"));
+    ui.headers.add_named(&simple.header, Some("simple"));
+    *ui.simple.borrow_mut() = Some(simple);
+    show_simple(&ui, script.is_none());
     ui.win.present();
-    focus_mode(&ui);
+    if ui.simple_mode.get() { ui.simple.borrow().as_ref().unwrap().focus(); } else { focus_mode(&ui); }
     if let Some(p) = script {
         if load_file(&ui, p) {
             let u = ui.clone();
             glib::idle_add_local_once(move || run_editor(&u));
         }
     }
+    ui
 }
 
 fn menu() -> gio::Menu {
@@ -539,7 +575,23 @@ fn options_menu(precision: &gtk::SpinButton) -> gtk::PopoverMenu {
 fn action(app: &gtk::Application, ui: &Rc<Ui>, name: &str, f: impl Fn(&Rc<Ui>) + 'static) {
     let a = gio::SimpleAction::new(name, None);
     let ui = ui.clone();
-    a.connect_activate(move |_, _| f(&ui));
+    let name = name.to_string();
+    a.connect_activate(move |_, _| {
+        if ui.simple_mode.get() && !matches!(name.as_str(), "quit" | "fullscreen") {
+            if name == "mode" { show_simple(&ui, false); return; }
+            if let Some(s) = ui.simple.borrow().as_ref() {
+                match name.as_str() {
+                    "run" => s.run(),
+                    "data" => s.select(simple::SimpleTab::Data),
+                    "export" => s.export(),
+                    "reset-view" => s.reset_view(),
+                    _ => {}
+                }
+            }
+            return;
+        }
+        f(&ui)
+    });
     app.add_action(&a);
 }
 
@@ -547,7 +599,12 @@ fn action(app: &gtk::Application, ui: &Rc<Ui>, name: &str, f: impl Fn(&Rc<Ui>) +
 fn toggle(app: &gtk::Application, ui: &Rc<Ui>, name: &str, init: bool, f: impl Fn(&Rc<Ui>, bool) + 'static) {
     let a = gio::SimpleAction::new_stateful(name, None, &init.to_variant());
     let ui = ui.clone();
+    let name = name.to_string();
     a.connect_activate(move |a, _| {
+        if ui.simple_mode.get() && name != "fullscreen" {
+            if name == "keypad" { if let Some(s) = ui.simple.borrow().as_ref() { s.toggle_keypad(); } }
+            return;
+        }
         let on = !a.state().and_then(|s| s.get::<bool>()).unwrap_or(false);
         a.set_state(&on.to_variant());
         f(&ui, on);
@@ -737,7 +794,8 @@ fn apply_layout(ui: &Ui) {
         slot.append(pad);
     }
     ui.calc.body.set_orientation(if right { gtk::Orientation::Horizontal } else { gtk::Orientation::Vertical });
-    pad.set_vexpand(right);
+    pad.set_vexpand(false);
+    pad.set_valign(if right { gtk::Align::Start } else { gtk::Align::Fill });
     pad.set_visible(shown);
     // number pad beside the mode's keys when the keypad spans the width, below them when it's to the right
     ui.keypad.show(mode, c.number_pad, !calc || !(right || ui.calc.narrow.get()));
@@ -903,11 +961,33 @@ fn set_dark(ui: &Rc<Ui>, on: bool) {
     ui.canvas.invalidate();
 }
 
+/// Switch shells without changing the remembered Advanced mode, theme, or calculator options.
+fn show_simple(ui: &Rc<Ui>, simple: bool) {
+    if simple && !ui.simple_mode.get() && ui.win.is_mapped() {
+        let mut cfg = ui.cfg.borrow_mut();
+        if ui.plot_side.is_visible() { cfg.split = ui.main.position(); }
+        cfg.editor_split = ui.edit_paned.position();
+    }
+    ui.simple_mode.set(simple);
+    let name = if simple { "simple" } else { "advanced" };
+    ui.shell.set_visible_child_name(name);
+    ui.headers.set_visible_child_name(name);
+    if let Some(settings) = gtk::Settings::default() {
+        settings.set_gtk_application_prefer_dark_theme(!simple && ui.cfg.borrow().dark);
+    }
+    if simple {
+        ui.win.set_title(Some("qcalcp — Simple"));
+        if let Some(s) = ui.simple.borrow().as_ref() { s.focus(); }
+    } else {
+        update_title(ui); apply_layout(ui); focus_mode(ui);
+    }
+}
+
 /// App CSS (touch sizes, editor font) plus the user's style.css, reloaded when it changes.
 fn load_css(ui: &Rc<Ui>) {
     let display = WidgetExt::display(&ui.win);
     let base = gtk::CssProvider::new();
-    base.load_from_string(&format!("{BASE_CSS}{}", font_css(&ui.cfg.borrow().editor_font)));
+    base.load_from_string(&format!("{BASE_CSS}{}{}", font_css(&ui.cfg.borrow().editor_font), simple::CSS));
     gtk::style_context_add_provider_for_display(&display, &base, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
 
     let user = gtk::CssProvider::new();
@@ -1028,6 +1108,10 @@ fn sync(ui: &Ui) {
 }
 
 fn update_title(ui: &Ui) {
+    if ui.simple_mode.get() {
+        ui.win.set_title(Some("qcalcp — Simple"));
+        return;
+    }
     let name = ui.file.borrow().as_ref().and_then(|p| p.file_name()).map_or("untitled".into(), |n| n.to_string_lossy().into_owned());
     let mark = if ui.editor.buffer().is_modified() { "*" } else { "" };
     ui.win.set_title(Some(&format!("{mark}{name} — qcalcp")));
@@ -1036,10 +1120,10 @@ fn update_title(ui: &Ui) {
 fn save_state(ui: &Ui) {
     let mut c = ui.cfg.borrow_mut();
     // a hidden plot pane leaves the divider at the end; keep the user's split
-    if ui.plot_side.is_visible() {
+    if !ui.simple_mode.get() && ui.plot_side.is_visible() {
         c.split = ui.main.position();
     }
-    c.editor_split = ui.edit_paned.position();
+    if !ui.simple_mode.get() { c.editor_split = ui.edit_paned.position(); }
     (c.width, c.height) = ui.win.default_size();
     c.maximized = ui.win.is_maximized();
     if let Err(e) = c.save_state(&ini_path()).and_then(|_| qalc::options().save_ini(&ini_path())) {

@@ -429,6 +429,10 @@ where
                 self.hline(plot.x0, plot.x1 - self.u, sy.px(t), c)?;
             }
         }
+        if a.origin_axes {
+            if bx.0 <= 0.0 && bx.1 >= 0.0 { self.vline(sx.px(0.0), plot.y0, plot.y1, self.theme.fg)?; }
+            if by.0 <= 0.0 && by.1 >= 0.0 { self.hline(plot.x0, plot.x1, sy.px(0.0), self.theme.fg)?; }
+        }
         let mut occupied = vec![];
         for (i, s) in a.series.iter().enumerate() {
             self.series2d(i, s, &sx, &sy, plot, &mut occupied)?;
