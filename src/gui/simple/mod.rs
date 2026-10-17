@@ -87,6 +87,7 @@ pub struct Simple {
     more: gtk::ToggleButton,
     angle: gtk::ToggleButton,
     pad_bar: gtk::Box,
+    calculator_controls: gtk::Box,
     keypad_toggle: gtk::Button,
     sender: mpsc::Sender<Job>,
     calc_rev: Arc<AtomicU64>,
@@ -164,11 +165,9 @@ impl Simple {
         work.append(&history_scroll);
         let intro = label("Enter a calculation. Tap an earlier answer to use it again.");
         intro.add_css_class("simple-hint");
-        work.append(&intro);
         let entry = gtk::Entry::builder().placeholder_text("Try 12 × 8, 3/4 + 1/2, or sin(30)").hexpand(true).build();
         entry.set_input_hints(gtk::InputHints::INHIBIT_OSK);
         slot_navigation(&entry);
-        work.append(&entry);
         let preview = label("");
         preview.add_css_class("simple-result");
         preview.set_selectable(true);
@@ -176,13 +175,18 @@ impl Simple {
         let message = label("");
         message.add_css_class("error");
         work.append(&message);
+        for text in [&preview, &message] {
+            text.set_visible(false);
+            text.connect_label_notify(|text| text.set_visible(!text.text().is_empty()));
+        }
+        work.append(&intro);
+        work.append(&entry);
         let controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let fraction = gtk::ToggleButton::with_label("Decimal result");
         controls.append(&fraction);
         let graph_this = gtk::Button::with_label("Graph this");
         graph_this.set_sensitive(false);
         controls.append(&graph_this);
-        work.append(&controls);
         stack.add_named(&work, Some("Calculator"));
 
         let graph = Board::new(true);
@@ -260,6 +264,7 @@ impl Simple {
         pad_bar.append(&angle);
         pad_bar.append(&more);
         pad_bar.append(&keypad_toggle);
+        pad_bar.append(&controls);
         root.append(&pad_bar);
         let keypad = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         keypad.add_css_class("simple-keypad");
@@ -306,6 +311,7 @@ impl Simple {
             more,
             angle: angle.clone(),
             pad_bar,
+            calculator_controls: controls,
             keypad_toggle,
             sender,
             calc_rev,
@@ -504,6 +510,9 @@ impl Simple {
                 parent.remove(&self.keypad_toggle);
             }
             destination.append(&self.keypad_toggle);
+        }
+        if self.tab.get() == SimpleTab::Calculator {
+            self.pad_bar.reorder_child_after(&self.calculator_controls, Some(&self.keypad_toggle));
         }
         self.pad_bar.set_visible(self.tab.get() == SimpleTab::Calculator);
         self.more.set_visible(!data);
@@ -1040,6 +1049,9 @@ mod tests {
         ui.win.set_size_request(width, height);
         ui.win.set_default_size(width, height);
         settle();
+        assert_eq!(s.calculator_controls.prev_sibling(), Some(s.keypad_toggle.clone().upcast()));
+        assert!(s.entry.next_sibling().is_none(), "the input must sit at the bottom of the calculator workspace");
+        assert!(!s.entry.vexpands(), "moving the input must not stretch its height");
         s.entry.set_text("3/4 + 1/2");
         s.press("@enter");
         pump_until(|| *s.last_answer.borrow() == "5/4");
@@ -1052,6 +1064,7 @@ mod tests {
         s.entry.set_text("sin(");
         s.press("@enter");
         pump_until(|| !s.message.text().is_empty());
+        assert!(s.message.is_visible());
         assert_eq!(s.entry.text(), "sin(");
         s.entry.set_text("");
         s.entry.set_text("1234");
@@ -1062,6 +1075,8 @@ mod tests {
         assert_eq!(s.entry.text(), "14");
         s.entry.set_text("");
         screenshot(&ui, "simple-calculator-1366");
+        assert!(!s.preview.is_visible());
+        assert!(!s.message.is_visible());
 
         s.select(SimpleTab::Graph);
         settle();
@@ -1116,6 +1131,7 @@ mod tests {
         s.select(SimpleTab::Calculator);
         assert!(s.pad_bar.is_visible());
         assert_eq!(s.keypad_toggle.parent(), Some(s.pad_bar.clone().upcast()));
+        assert_eq!(s.calculator_controls.prev_sibling(), Some(s.keypad_toggle.clone().upcast()));
         s.select(SimpleTab::Data);
         settle();
         s.press("−");
