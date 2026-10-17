@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=qcalcp
+Name=EduCalculator
 GenericName=Calculator and Plotter
 Comment=Calculator, Octave-style interpreter and plotter
-Exec=qcalcp gui %f
+Exec=EduCalc gui %f
 Icon=qcalcp
 Terminal=false
 Categories=Education;Math;

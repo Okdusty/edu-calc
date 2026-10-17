@@ -1,4 +1,7 @@
-## qcalcp
+## EduCalculator
+
+The application is named **EduCalculator**, with **EduCalc** used in its interface.
+The executable is `EduCalc.exe` on Windows and `EduCalc` on Linux. Configuration paths retain `qcalcp` for compatibility.
 
 A calculator, Octave-style interpreter and plotter in one program, with a GTK 4 window, a terminal UI and a command line. Calculator input goes through [libqalculate](https://github.com/Qalculate/libqalculate) (exact fractions, units, symbolic calculus, number bases); scripts run in a built-in interpreter for a large subset of Octave/MATLAB. Answers and plots convert between the two in both directions.
 
@@ -12,7 +15,8 @@ A calculator, Octave-style interpreter and plotter in one program, with a GTK 4 
 four-row keypad fixed along the bottom; **More functions** opens a second page, and **Hide
 keypad** makes more room. The interface starts light, in degrees, with decimal number bases.
 The **DEG/RAD** button changes the angle unit for both calculations and function graphs.
-Drag the **resize keypad** strip up or down to change its height in Simple or Advanced.
+Drag the **resize keypad** strip up or down to change its height in Simple mode.
+Advanced uses the standard keypad layout without a resize strip.
 Dragging it down gives the graph or data area more room; double-click the strip to reset.
 The focused strip also supports Up/Down and Home. Simple keypads include `x`, `y` and `=`.
 
@@ -28,7 +32,10 @@ The focused strip also supports Up/Down and Home. Simple keypads include `x`, `y
   Line, Bar or Histogram and the columns to use. A histogram uses the selected Y/values
   column; other charts can use row numbers instead of X. Statistics show the selected
   column's count, mean, median, minimum, maximum and sample standard deviation (undefined
-  with fewer than two values). Missing, invalid and nonfinite cells are excluded and counted;
+  with fewer than two values). Beside standard deviation, **Regression** shows the least-squares
+  line `y = mx + b` for the selected X/Y columns (or row numbers as X), using complete numeric
+  pairs. It requires at least two pairs with distinct X values and is unavailable for histograms.
+  Missing, invalid and nonfinite cells are excluded and counted;
   line charts keep gaps. Decimal commas are accepted in cells. Export tables to CSV/TSV and
   charts through **Menu → Export chart** to PNG/SVG.
   Compact table controls include **Delete Row** and **Delete Column**, acting on the selected cell.
@@ -51,13 +58,13 @@ Answers that can be drawn get a **Visualize** button: a definite integral as its
 
 **Data**: `readmatrix`, `readtable`, `xlsread`, `csvread`, `dlmread` and `importdata` read CSV, TSV, text, XLSX, XLS and ODS. The data editor (Ctrl+D) is a spreadsheet grid with paste from LibreOffice or Excel, column statistics, and buttons that send the table to the workspace or plot it.
 
-**Terminal UI**: starts when there is no display (SSH, a bare console) or with `qcalcp tui`. Same calculator, Octave mode, completion and plots, drawn with half-block characters.
+**Terminal UI**: starts when there is no display (SSH, a bare console) or with `EduCalc tui`. Same calculator, Octave mode, completion and plots, drawn with half-block characters.
 
 **Python addons**: every function in `~/.config/qcalcp/addons/*.py` can be called from Octave code. See [examples/addons/example.py](examples/addons/example.py).
 
 ### Examples
 
-Each picture is the output of a script in [demo/](demo/); run them from the repository root, in the GUI (`qcalcp gui demo/euler.m`) or straight to a file (`qcalcp demo/euler.m -o euler.png`).
+Each picture is the output of a script in [demo/](demo/); run them from the repository root, in the GUI (`EduCalc gui demo/euler.m`) or straight to a file (`EduCalc demo/euler.m -o euler.png`).
 
 | | |
 |---|---|
@@ -74,7 +81,7 @@ Each picture is the output of a script in [demo/](demo/); run them from the repo
 
 **Linux**: download `qcalcp-*-x86_64.AppImage`, `chmod +x` it and run it. It bundles GTK 4, libqalculate and Python, and needs glibc 2.39 or newer (Ubuntu 24.04, Fedora 40, Debian 13 and later).
 
-**Windows 10/11 (64-bit)**: unzip `qcalcp-*-win64.zip` and run `bin\qcalcp.exe`. Started from Explorer it opens the window; from a terminal it also takes the command-line arguments below.
+**Windows 10/11 (64-bit)**: unzip `qcalcp-*-win64.zip` and run `bin\EduCalc.exe`. Started from Explorer it opens the window; from a terminal it also takes the command-line arguments below.
 
 **From source** you need Rust (edition 2024; developed with 1.99), a C++17 compiler, pkg-config, GTK 4.12 or newer, libqalculate 5 (developed against 5.12) and Python 3 with its development files.
 
@@ -83,21 +90,21 @@ Each picture is the output of a script in [demo/](demo/); run them from the repo
 # Fedora:        sudo dnf install gcc-c++ pkgconf gtk4-devel libqalculate-devel python3-devel
 # Arch:          sudo pacman -S base-devel gtk4 libqalculate python
 cargo build --release
-./target/release/qcalcp
+./target/release/EduCalc
 ```
 
 ### Command line
 
 ```sh
-qcalcp                              # GTK window, or the terminal UI without a display
-qcalcp '5 km to mi'                 # 5 km → mi = 3.106855961 mi
-qcalcp 'integrate(x^2, 0, 3)' -o area.png    # prints 9, saves the shaded area
-qcalcp --set base=16 '255 + 1'      # 0x100, with a HEX/DEC/OCT/BIN line
-qcalcp plot 'sin(x)/x' -20:20       # draws in the terminal; -o file.png|.svg to save
-qcalcp demo/physics.m -o physics.png -s 1600x1200
-qcalcp measurements.xlsx -o data.png         # column statistics and a plot
-qcalcp -e 'A = magic(4); disp(det(A))'
-qcalcp tui
+EduCalc                              # GTK window, or the terminal UI without a display
+EduCalc '5 km to mi'                 # 5 km → mi = 3.106855961 mi
+EduCalc 'integrate(x^2, 0, 3)' -o area.png    # prints 9, saves the shaded area
+EduCalc --set base=16 '255 + 1'      # 0x100, with a HEX/DEC/OCT/BIN line
+EduCalc plot 'sin(x)/x' -20:20       # draws in the terminal; -o file.png|.svg to save
+EduCalc demo/physics.m -o physics.png -s 1600x1200
+EduCalc measurements.xlsx -o data.png         # column statistics and a plot
+EduCalc -e 'A = magic(4); disp(det(A))'
+EduCalc tui
 ```
 
 ### Keys
@@ -130,6 +137,11 @@ Files live in `~/.config/qcalcp/` (Windows: `%LOCALAPPDATA%\qcalcp\`) and are cr
 
 ### Development checks
 
+The app embeds its GTK icons and its Windows executable icon. Their source is
+`packaging/qcalcp.svg`; regenerate the checked-in PNG/ICO files with
+`python packaging/generate-icons.py` (requires `rsvg-convert`). Building requires
+`glib-compile-resources` from the GTK development tools and, on MinGW, `windres`.
+
 Run `cargo test --locked -- --test-threads=1` and `cargo build --locked`. On Windows/MSYS2,
 libqalculate's definitions must be beside the executable: copy the contents of
 `$MINGW_PREFIX/share/qalculate/` into `target/debug/deps/definitions/` for tests and
@@ -155,4 +167,4 @@ QCALCP_UI_HEIGHT=540`. The workspace scrolls when necessary while the keypad sta
 
 ### License
 
-GPL-2.0-or-later (see [LICENSE](LICENSE)), because qcalcp links libqalculate, which is GPL-2.0-or-later. The release builds also bundle GTK and its libraries (LGPL-2.1-or-later and others) and Python (PSF License).
+GPL-2.0-or-later (see [LICENSE](LICENSE)), because EduCalc links libqalculate, which is GPL-2.0-or-later. The release builds also bundle GTK and its libraries (LGPL-2.1-or-later and others) and Python (PSF License).

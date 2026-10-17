@@ -85,6 +85,40 @@ fn number(s: &str) -> Option<f64> {
     io::to_num(s.trim(), true).filter(|n| n.is_finite())
 }
 
+/// Ordinary least squares over complete, finite X/Y pairs.
+pub fn linear_regression(grid: &[Vec<String>], xcol: Option<usize>, ycol: usize) -> Result<(f64, f64), &'static str> {
+    let pairs: Vec<_> = grid.iter().skip(1).enumerate().filter_map(|(i, row)| {
+        let x = match xcol {
+            Some(c) => number(row.get(c)?),
+            None => Some(i as f64 + 1.0),
+        }?;
+        let y = number(row.get(ycol)?)?;
+        Some((x, y))
+    }).collect();
+    if pairs.len() < 2 {
+        return Err("need at least 2 valid X/Y pairs");
+    }
+    let n = pairs.len() as f64;
+    let mx = pairs.iter().map(|(x, _)| x / n).sum::<f64>();
+    let my = pairs.iter().map(|(_, y)| y / n).sum::<f64>();
+    // Scale the centered values before squaring to avoid overflow.
+    let sx = pairs.iter().map(|(x, _)| (x - mx).abs()).fold(0.0, f64::max);
+    let sy = pairs.iter().map(|(_, y)| (y - my).abs()).fold(0.0, f64::max);
+    if sx == 0.0 {
+        return Err("X values must differ");
+    }
+    let slope = if sy == 0.0 { 0.0 } else {
+        let xx = pairs.iter().map(|(x, _)| ((x - mx) / sx).powi(2)).sum::<f64>();
+        let xy = pairs.iter().map(|(x, y)| ((x - mx) / sx) * ((y - my) / sy)).sum::<f64>();
+        (xy / xx) * (sy / sx)
+    };
+    let intercept = (-slope).mul_add(mx, my);
+    if !slope.is_finite() || !intercept.is_finite() || !sx.is_finite() || !sy.is_finite() {
+        return Err("values exceed numeric range");
+    }
+    Ok((slope, intercept))
+}
+
 pub fn summary(values: impl Iterator<Item = Option<f64>>) -> Summary {
     let all: Vec<_> = values.collect();
     let mut v: Vec<_> = all.iter().flatten().copied().filter(|n| n.is_finite()).collect();
@@ -186,6 +220,22 @@ mod tests {
         assert_eq!((s.count, s.skipped, s.mean, s.median, s.std), (3, 2, Some(2.0), Some(2.0), Some(1.0)));
         assert_eq!(summary([Some(2.0)].into_iter()).std, None);
         assert_eq!(summary([None].into_iter()).mean, None);
+    }
+    #[test]
+    fn regression_uses_complete_pairs_and_selected_columns() {
+        let g: Vec<Vec<String>> = [["X", "Y"], ["1", "1,5"], ["2", "oops"], ["3", "5,5"], ["NaN", "7"], ["", ""]]
+            .map(|r| r.map(String::from).to_vec()).to_vec();
+        assert_eq!(linear_regression(&g, Some(0), 1), Ok((2.0, -0.5)));
+        assert_eq!(linear_regression(&g[..4], None, 1), Ok((2.0, -0.5)));
+        assert_eq!(linear_regression(&g, Some(1), 0), Ok((0.5, 0.25)));
+    }
+    #[test]
+    fn regression_handles_degenerate_and_large_values() {
+        let grid = |pairs: [[&str; 2]; 3]| pairs.map(|r| r.map(String::from).to_vec()).to_vec();
+        assert_eq!(linear_regression(&grid([["X", "Y"], ["1", "3"], ["2", "3"]]), Some(0), 1), Ok((0.0, 3.0)));
+        assert!(linear_regression(&grid([["X", "Y"], ["1", "3"], ["1", "4"]]), Some(0), 1).unwrap_err().contains("differ"));
+        assert!(linear_regression(&grid([["X", "Y"], ["1", "3"], ["2", "inf"]]), Some(0), 1).is_err());
+        assert_eq!(linear_regression(&grid([["X", "Y"], ["1e200", "2e200"], ["2e200", "4e200"]]), Some(0), 1), Ok((2.0, 0.0)));
     }
     #[test]
     fn chart_data_and_histogram_counts() {

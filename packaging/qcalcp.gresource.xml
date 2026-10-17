@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/com/dusty/qcalcp">
+    <file>icons/16x16/apps/qcalcp.png</file>
+    <file>icons/24x24/apps/qcalcp.png</file>
+    <file>icons/32x32/apps/qcalcp.png</file>
+    <file>icons/48x48/apps/qcalcp.png</file>
+    <file>icons/64x64/apps/qcalcp.png</file>
+    <file>icons/128x128/apps/qcalcp.png</file>
+    <file>icons/256x256/apps/qcalcp.png</file>
+  </gresource>
+</gresources>

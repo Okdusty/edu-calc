@@ -86,6 +86,8 @@ pub struct Simple {
     function_keys: gtk::Stack,
     more: gtk::ToggleButton,
     angle: gtk::ToggleButton,
+    pad_bar: gtk::Box,
+    calculator_controls: gtk::Box,
     keypad_toggle: gtk::Button,
     sender: mpsc::Sender<Job>,
     calc_rev: Arc<AtomicU64>,
@@ -163,11 +165,9 @@ impl Simple {
         work.append(&history_scroll);
         let intro = label("Enter a calculation. Tap an earlier answer to use it again.");
         intro.add_css_class("simple-hint");
-        work.append(&intro);
         let entry = gtk::Entry::builder().placeholder_text("Try 12 × 8, 3/4 + 1/2, or sin(30)").hexpand(true).build();
         entry.set_input_hints(gtk::InputHints::INHIBIT_OSK);
         slot_navigation(&entry);
-        work.append(&entry);
         let preview = label("");
         preview.add_css_class("simple-result");
         preview.set_selectable(true);
@@ -175,16 +175,27 @@ impl Simple {
         let message = label("");
         message.add_css_class("error");
         work.append(&message);
+        for text in [&preview, &message] {
+            text.set_visible(false);
+            text.connect_label_notify(|text| text.set_visible(!text.text().is_empty()));
+        }
+        work.append(&intro);
+        work.append(&entry);
         let controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let fraction = gtk::ToggleButton::with_label("Decimal result");
         controls.append(&fraction);
         let graph_this = gtk::Button::with_label("Graph this");
         graph_this.set_sensitive(false);
         controls.append(&graph_this);
-        work.append(&controls);
         stack.add_named(&work, Some("Calculator"));
 
         let graph = Board::new(true);
+        graph.root.remove(&graph.tools);
+        graph.root.prepend(&gtk::ScrolledWindow::builder()
+            .child(&graph.tools)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_height(true)
+            .build());
         let graph_list = column(8);
         let graph_left = column(6);
         graph_left.set_width_request(310);
@@ -243,6 +254,7 @@ impl Simple {
         root.append(&workspace);
 
         let pad_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        pad_bar.set_margin_top(18);
         let angle = gtk::ToggleButton::with_label("DEG");
         angle.set_tooltip_text(Some("Degrees. Tap to switch to radians."));
         angle.set_focus_on_click(false);
@@ -253,6 +265,7 @@ impl Simple {
         pad_bar.append(&angle);
         pad_bar.append(&more);
         pad_bar.append(&keypad_toggle);
+        pad_bar.append(&controls);
         root.append(&pad_bar);
         let keypad = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         keypad.add_css_class("simple-keypad");
@@ -298,6 +311,8 @@ impl Simple {
             function_keys,
             more,
             angle: angle.clone(),
+            pad_bar,
+            calculator_controls: controls,
             keypad_toggle,
             sender,
             calc_rev,
@@ -479,8 +494,30 @@ impl Simple {
         }
     }
     fn show_keys(&self) {
-        self.more.set_visible(self.tab.get() != SimpleTab::Data);
-        self.angle.set_visible(self.tab.get() != SimpleTab::Data);
+        let data = self.tab.get() == SimpleTab::Data;
+        let graph = self.tab.get() == SimpleTab::Graph;
+        let functions = if graph { &self.graph.tools } else { &self.pad_bar };
+        for button in [&self.angle, &self.more] {
+            if button.parent().as_ref() != Some(functions.upcast_ref()) {
+                if let Some(parent) = button.parent().and_downcast::<gtk::Box>() {
+                    parent.remove(button);
+                }
+                functions.append(button);
+            }
+        }
+        let destination = if data { &self.data_board.tools } else { functions };
+        if self.keypad_toggle.parent().as_ref() != Some(destination.upcast_ref()) {
+            if let Some(parent) = self.keypad_toggle.parent().and_downcast::<gtk::Box>() {
+                parent.remove(&self.keypad_toggle);
+            }
+            destination.append(&self.keypad_toggle);
+        }
+        if self.tab.get() == SimpleTab::Calculator {
+            self.pad_bar.reorder_child_after(&self.calculator_controls, Some(&self.keypad_toggle));
+        }
+        self.pad_bar.set_visible(self.tab.get() == SimpleTab::Calculator);
+        self.more.set_visible(!data);
+        self.angle.set_visible(!data);
         self.function_keys.set_visible_child_name(if self.tab.get() == SimpleTab::Data {
             "data"
         } else if self.more.is_active() {
@@ -549,7 +586,7 @@ impl Simple {
                     ("ln", "ln(□)"),
                     ("log₁₀", "log10(□)"),
                     ("!", "!"),
-                    ("y", "y"),
+                    ("10ˣ", "10^□"),
                     ("←", "@left"),
                     ("→", "@right"),
                     ("Next □", "@slot"),
@@ -583,7 +620,7 @@ impl Simple {
                 (".", "."),
                 ("Enter", "@enter"),
                 ("+", "+"),
-                (")", ")"),
+                (",", ","),
             ],
             5,
         );
@@ -928,14 +965,23 @@ impl Simple {
         *self.data_board.figure.borrow_mut() = fig;
         self.data_board.redraw();
         let fmt = |v: Option<f64>| v.filter(|v| v.is_finite()).map(plot::cursor::num).unwrap_or_else(|| "—".into());
+        let regression = if chart == model::Chart::Histogram {
+            "— (requires an X/Y chart)".into()
+        } else {
+            match model::linear_regression(&grid, x, self.ycol.selected() as usize) {
+                Ok((m, b)) => format!("y = {}x {} {}", fmt(Some(m)), if b < 0.0 { "−" } else { "+" }, fmt(Some(b.abs()))),
+                Err(reason) => format!("— ({reason})"),
+            }
+        };
         self.stats.set_text(&format!(
-            "Count: {}    Mean: {}    Median: {}\nMin: {}    Max: {}    Sample standard deviation: {}\n{} missing or invalid values · {} rows skipped in chart",
+            "Count: {}    Mean: {}    Median: {}\nMin: {}    Max: {}    Sample standard deviation: {}    Regression: {}\n{} missing or invalid values · {} rows skipped in chart",
             stats.count,
             fmt(stats.mean),
             fmt(stats.median),
             fmt(stats.min),
             fmt(stats.max),
             fmt(stats.std),
+            regression,
             stats.skipped,
             skipped
         ));
@@ -1000,8 +1046,12 @@ mod tests {
         let app = gtk::Application::builder().application_id("com.dusty.qcalcp.classroomtest").flags(gio::ApplicationFlags::NON_UNIQUE).build();
         app.register(None::<&gio::Cancellable>).unwrap();
         let ui = super::super::build(&app, None);
+        assert_eq!(gtk::Window::default_icon_name().as_deref(), Some("qcalcp"));
+        assert!(gtk::IconTheme::for_display(&WidgetExt::display(&ui.win)).has_icon("qcalcp"), "embedded application icon is missing");
         let s = ui.simple.borrow().as_ref().unwrap().clone();
         assert!(ui.simple_mode.get());
+        assert_eq!(ui.win.title().as_deref(), Some("EduCalc — Simple"));
+        assert_eq!(glib::application_name().as_deref(), Some("EduCalculator"));
         assert_eq!(s.tab.get(), SimpleTab::Calculator);
         assert_eq!(s.options.borrow().angle, "deg");
         assert!(s.keypad.is_visible());
@@ -1011,6 +1061,9 @@ mod tests {
         ui.win.set_size_request(width, height);
         ui.win.set_default_size(width, height);
         settle();
+        assert_eq!(s.calculator_controls.prev_sibling(), Some(s.keypad_toggle.clone().upcast()));
+        assert!(s.entry.next_sibling().is_none(), "the input must sit at the bottom of the calculator workspace");
+        assert!(!s.entry.vexpands(), "moving the input must not stretch its height");
         s.entry.set_text("3/4 + 1/2");
         s.press("@enter");
         pump_until(|| *s.last_answer.borrow() == "5/4");
@@ -1023,6 +1076,7 @@ mod tests {
         s.entry.set_text("sin(");
         s.press("@enter");
         pump_until(|| !s.message.text().is_empty());
+        assert!(s.message.is_visible());
         assert_eq!(s.entry.text(), "sin(");
         s.entry.set_text("");
         s.entry.set_text("1234");
@@ -1033,9 +1087,15 @@ mod tests {
         assert_eq!(s.entry.text(), "14");
         s.entry.set_text("");
         screenshot(&ui, "simple-calculator-1366");
+        assert!(!s.preview.is_visible());
+        assert!(!s.message.is_visible());
 
         s.select(SimpleTab::Graph);
         settle();
+        assert!(!s.pad_bar.is_visible());
+        for button in [s.angle.upcast_ref::<gtk::Widget>(), s.more.upcast_ref(), s.keypad_toggle.upcast_ref()] {
+            assert_eq!(button.parent(), Some(s.graph.tools.clone().upcast()));
+        }
         let graph_height = s.graph.area.height();
         let workspace_height = s.root.first_child().unwrap().height();
         s.keypad_height.set_height(160);
@@ -1072,6 +1132,20 @@ mod tests {
 
         s.select(SimpleTab::Data);
         settle();
+        assert!(!s.pad_bar.is_visible());
+        assert_eq!(s.keypad_toggle.parent(), Some(s.data_board.tools.clone().upcast()));
+        let chart_height = s.data_board.area.height();
+        s.toggle_keypad();
+        settle();
+        assert!(s.data_board.area.height() > chart_height);
+        assert_eq!(s.keypad_toggle.label().as_deref(), Some("Show keypad"));
+        s.toggle_keypad();
+        s.select(SimpleTab::Calculator);
+        assert!(s.pad_bar.is_visible());
+        assert_eq!(s.keypad_toggle.parent(), Some(s.pad_bar.clone().upcast()));
+        assert_eq!(s.calculator_controls.prev_sibling(), Some(s.keypad_toggle.clone().upcast()));
+        s.select(SimpleTab::Data);
+        settle();
         s.press("−");
         s.press("1");
         assert_eq!(s.data.grid()[1][0], "-1");
@@ -1091,6 +1165,10 @@ mod tests {
             settle();
             assert!(s.stats.text().contains("Mean: 2"), "{}", s.stats.text());
             assert!(s.stats.text().contains("standard deviation: 1"));
+            assert!(s.stats.text().contains(if i == 3 { "Regression: — (requires an X/Y chart)" } else { "Regression: y = 1x + 0" }), "{}", s.stats.text());
+            if i == 0 {
+                screenshot(&ui, "simple-data-regression-1366");
+            }
         }
         screenshot(&ui, "simple-data-1366");
         assert!(s.data_board.figure.borrow().axes[0].origin_axes);
@@ -1103,6 +1181,7 @@ mod tests {
         let table = s.data.grid();
         super::super::show_simple(&ui, false);
         settle();
+        assert!(ui.win.title().unwrap().ends_with(" — EduCalc"));
         assert_eq!(qalc::options(), advanced_options);
         assert_eq!(ui.cfg.borrow().calc_mode, advanced_mode);
         super::super::show_simple(&ui, true);
