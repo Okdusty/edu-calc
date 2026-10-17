@@ -86,6 +86,7 @@ pub struct Simple {
     function_keys: gtk::Stack,
     more: gtk::ToggleButton,
     angle: gtk::ToggleButton,
+    pad_bar: gtk::Box,
     keypad_toggle: gtk::Button,
     sender: mpsc::Sender<Job>,
     calc_rev: Arc<AtomicU64>,
@@ -185,6 +186,12 @@ impl Simple {
         stack.add_named(&work, Some("Calculator"));
 
         let graph = Board::new(true);
+        graph.root.remove(&graph.tools);
+        graph.root.prepend(&gtk::ScrolledWindow::builder()
+            .child(&graph.tools)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_height(true)
+            .build());
         let graph_list = column(8);
         let graph_left = column(6);
         graph_left.set_width_request(310);
@@ -298,6 +305,7 @@ impl Simple {
             function_keys,
             more,
             angle: angle.clone(),
+            pad_bar,
             keypad_toggle,
             sender,
             calc_rev,
@@ -479,8 +487,27 @@ impl Simple {
         }
     }
     fn show_keys(&self) {
-        self.more.set_visible(self.tab.get() != SimpleTab::Data);
-        self.angle.set_visible(self.tab.get() != SimpleTab::Data);
+        let data = self.tab.get() == SimpleTab::Data;
+        let graph = self.tab.get() == SimpleTab::Graph;
+        let functions = if graph { &self.graph.tools } else { &self.pad_bar };
+        for button in [&self.angle, &self.more] {
+            if button.parent().as_ref() != Some(functions.upcast_ref()) {
+                if let Some(parent) = button.parent().and_downcast::<gtk::Box>() {
+                    parent.remove(button);
+                }
+                functions.append(button);
+            }
+        }
+        let destination = if data { &self.data_board.tools } else { functions };
+        if self.keypad_toggle.parent().as_ref() != Some(destination.upcast_ref()) {
+            if let Some(parent) = self.keypad_toggle.parent().and_downcast::<gtk::Box>() {
+                parent.remove(&self.keypad_toggle);
+            }
+            destination.append(&self.keypad_toggle);
+        }
+        self.pad_bar.set_visible(self.tab.get() == SimpleTab::Calculator);
+        self.more.set_visible(!data);
+        self.angle.set_visible(!data);
         self.function_keys.set_visible_child_name(if self.tab.get() == SimpleTab::Data {
             "data"
         } else if self.more.is_active() {
@@ -549,7 +576,7 @@ impl Simple {
                     ("ln", "ln(□)"),
                     ("log₁₀", "log10(□)"),
                     ("!", "!"),
-                    ("y", "y"),
+                    ("10ˣ", "10^□"),
                     ("←", "@left"),
                     ("→", "@right"),
                     ("Next □", "@slot"),
@@ -583,7 +610,7 @@ impl Simple {
                 (".", "."),
                 ("Enter", "@enter"),
                 ("+", "+"),
-                (")", ")"),
+                (",", ","),
             ],
             5,
         );
@@ -1038,6 +1065,10 @@ mod tests {
 
         s.select(SimpleTab::Graph);
         settle();
+        assert!(!s.pad_bar.is_visible());
+        for button in [s.angle.upcast_ref::<gtk::Widget>(), s.more.upcast_ref(), s.keypad_toggle.upcast_ref()] {
+            assert_eq!(button.parent(), Some(s.graph.tools.clone().upcast()));
+        }
         let graph_height = s.graph.area.height();
         let workspace_height = s.root.first_child().unwrap().height();
         s.keypad_height.set_height(160);
@@ -1072,6 +1103,19 @@ mod tests {
         screenshot(&ui, "simple-graph-1366");
         assert!(ui.interp.borrow().plots.figures.is_empty(), "classroom graph changed Advanced figures");
 
+        s.select(SimpleTab::Data);
+        settle();
+        assert!(!s.pad_bar.is_visible());
+        assert_eq!(s.keypad_toggle.parent(), Some(s.data_board.tools.clone().upcast()));
+        let chart_height = s.data_board.area.height();
+        s.toggle_keypad();
+        settle();
+        assert!(s.data_board.area.height() > chart_height);
+        assert_eq!(s.keypad_toggle.label().as_deref(), Some("Show keypad"));
+        s.toggle_keypad();
+        s.select(SimpleTab::Calculator);
+        assert!(s.pad_bar.is_visible());
+        assert_eq!(s.keypad_toggle.parent(), Some(s.pad_bar.clone().upcast()));
         s.select(SimpleTab::Data);
         settle();
         s.press("−");
