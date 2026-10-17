@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build/qcalcp-$VERSION-win64.zip from target/release/qcalcp.exe, in an MSYS2 UCRT64 shell (see
+# build/qcalcp-$VERSION-win64.zip from target/release/EduCalc.exe, in an MSYS2 UCRT64 shell (see
 # .github/workflows/release.yml). The layout mirrors the MSYS2 prefix, so GTK, gdk-pixbuf,
 # libqalculate (bin\..\share\qalculate) and Python (main.rs sets PYTHONHOME to bin\..) all find
 # their files relative to the exe.
@@ -11,7 +11,7 @@ D=build/$NAME
 P=${MINGW_PREFIX:-/ucrt64}
 rm -rf "$D" "build/$NAME.zip"
 mkdir -p "$D/bin" "$D/lib" "$D/share/glib-2.0/schemas" "$D/share/icons"
-cp target/release/qcalcp.exe "$D/bin/"
+cp target/release/EduCalc.exe "$D/bin/"
 cp README.md LICENSE "$D/"
 
 cp -r "$P/lib/gdk-pixbuf-2.0" "$D/lib/"
@@ -30,7 +30,7 @@ cp -r "$P/lib/$PY" "$D/lib/"
 )
 
 # every DLL from the prefix that the exe, the pixbuf loaders or Python's extension modules load
-mods=("$D/bin/qcalcp.exe" "$D"/lib/gdk-pixbuf-2.0/*/loaders/*.dll "$D/lib/$PY"/lib-dynload/*.pyd)
+mods=("$D/bin/EduCalc.exe" "$D"/lib/gdk-pixbuf-2.0/*/loaders/*.dll "$D/lib/$PY"/lib-dynload/*.pyd)
 ntldd -R "${mods[@]}" | tr '\\' '/' | grep -io "[a-z]:/[^ ]*/${P#/}/bin/[^ ]*\.dll" | sort -u | while read -r dll; do
     cp -n "$(cygpath -u "$dll")" "$D/bin/"
 done

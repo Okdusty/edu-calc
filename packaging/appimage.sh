@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build/qcalcp-$VERSION-x86_64.AppImage from target/release/qcalcp (run on Ubuntu 24.04, see
+# build/qcalcp-$VERSION-x86_64.AppImage from target/release/EduCalc (run on Ubuntu 24.04, see
 # .github/workflows/release.yml). GTK 4 comes in through linuxdeploy's GTK plugin; Python's
 # standard library goes to usr/lib, where main.rs points PYTHONHOME at start-up. libqalculate must
 # be built with --enable-compiled-definitions: its data path would point outside the AppImage.
@@ -9,7 +9,7 @@ APPDIR=build/AppDir
 TOOLS=build/tools
 rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/icons" "$TOOLS"
-install -m755 target/release/qcalcp "$APPDIR/usr/bin/"
+install -m755 target/release/EduCalc "$APPDIR/usr/bin/"
 
 # Python's standard library, without tests, GUI toolkits and build files (libpython itself is a
 # dependency of the binary and gets deployed with the rest)

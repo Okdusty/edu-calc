@@ -34,7 +34,7 @@ fn compile_icons() {
         assert!(status.success(), "failed to compile the Windows icon");
         path
     };
-    println!("cargo:rustc-link-arg-bin=qcalcp={}", resource.display());
+    println!("cargo:rustc-link-arg-bin=EduCalc={}", resource.display());
 }
 
 fn main() {

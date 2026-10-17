@@ -196,12 +196,12 @@ impl Ui {
 pub fn run(script: Option<PathBuf>) -> ExitCode {
     let app = gtk::Application::builder()
         .application_id("com.dusty.qcalcp")
-        // ponytail: one process per window, so `qcalcp gui x.m` always runs x.m; single-instance needs open() handling
+        // ponytail: one process per window, so `EduCalc gui x.m` always runs x.m; single-instance needs open() handling
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
     let script = RefCell::new(script);
     app.connect_activate(move |app| { build(app, script.take()); });
-    app.run_with_args(&["qcalcp"]).into()
+    app.run_with_args(&["EduCalc"]).into()
 }
 
 fn ini_path() -> PathBuf {
@@ -978,7 +978,7 @@ fn show_simple(ui: &Rc<Ui>, simple: bool) {
         settings.set_gtk_application_prefer_dark_theme(!simple && ui.cfg.borrow().dark);
     }
     if simple {
-        ui.win.set_title(Some("qcalcp — Simple"));
+        ui.win.set_title(Some("EduCalc — Simple"));
         if let Some(s) = ui.simple.borrow().as_ref() { s.focus(); }
     } else {
         update_title(ui); apply_layout(ui); focus_mode(ui);
@@ -1111,12 +1111,12 @@ fn sync(ui: &Ui) {
 
 fn update_title(ui: &Ui) {
     if ui.simple_mode.get() {
-        ui.win.set_title(Some("qcalcp — Simple"));
+        ui.win.set_title(Some("EduCalc — Simple"));
         return;
     }
     let name = ui.file.borrow().as_ref().and_then(|p| p.file_name()).map_or("untitled".into(), |n| n.to_string_lossy().into_owned());
     let mark = if ui.editor.buffer().is_modified() { "*" } else { "" };
-    ui.win.set_title(Some(&format!("{mark}{name} — qcalcp")));
+    ui.win.set_title(Some(&format!("{mark}{name} — EduCalc")));
 }
 
 fn save_state(ui: &Ui) {

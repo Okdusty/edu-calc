@@ -965,14 +965,23 @@ impl Simple {
         *self.data_board.figure.borrow_mut() = fig;
         self.data_board.redraw();
         let fmt = |v: Option<f64>| v.filter(|v| v.is_finite()).map(plot::cursor::num).unwrap_or_else(|| "—".into());
+        let regression = if chart == model::Chart::Histogram {
+            "— (requires an X/Y chart)".into()
+        } else {
+            match model::linear_regression(&grid, x, self.ycol.selected() as usize) {
+                Ok((m, b)) => format!("y = {}x {} {}", fmt(Some(m)), if b < 0.0 { "−" } else { "+" }, fmt(Some(b.abs()))),
+                Err(reason) => format!("— ({reason})"),
+            }
+        };
         self.stats.set_text(&format!(
-            "Count: {}    Mean: {}    Median: {}\nMin: {}    Max: {}    Sample standard deviation: {}\n{} missing or invalid values · {} rows skipped in chart",
+            "Count: {}    Mean: {}    Median: {}\nMin: {}    Max: {}    Sample standard deviation: {}    Regression: {}\n{} missing or invalid values · {} rows skipped in chart",
             stats.count,
             fmt(stats.mean),
             fmt(stats.median),
             fmt(stats.min),
             fmt(stats.max),
             fmt(stats.std),
+            regression,
             stats.skipped,
             skipped
         ));
@@ -1041,6 +1050,8 @@ mod tests {
         assert!(gtk::IconTheme::for_display(&WidgetExt::display(&ui.win)).has_icon("qcalcp"), "embedded application icon is missing");
         let s = ui.simple.borrow().as_ref().unwrap().clone();
         assert!(ui.simple_mode.get());
+        assert_eq!(ui.win.title().as_deref(), Some("EduCalc — Simple"));
+        assert_eq!(glib::application_name().as_deref(), Some("EduCalculator"));
         assert_eq!(s.tab.get(), SimpleTab::Calculator);
         assert_eq!(s.options.borrow().angle, "deg");
         assert!(s.keypad.is_visible());
@@ -1154,6 +1165,10 @@ mod tests {
             settle();
             assert!(s.stats.text().contains("Mean: 2"), "{}", s.stats.text());
             assert!(s.stats.text().contains("standard deviation: 1"));
+            assert!(s.stats.text().contains(if i == 3 { "Regression: — (requires an X/Y chart)" } else { "Regression: y = 1x + 0" }), "{}", s.stats.text());
+            if i == 0 {
+                screenshot(&ui, "simple-data-regression-1366");
+            }
         }
         screenshot(&ui, "simple-data-1366");
         assert!(s.data_board.figure.borrow().axes[0].origin_axes);
@@ -1166,6 +1181,7 @@ mod tests {
         let table = s.data.grid();
         super::super::show_simple(&ui, false);
         settle();
+        assert!(ui.win.title().unwrap().ends_with(" — EduCalc"));
         assert_eq!(qalc::options(), advanced_options);
         assert_eq!(ui.cfg.borrow().calc_mode, advanced_mode);
         super::super::show_simple(&ui, true);

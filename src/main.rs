@@ -15,15 +15,15 @@ use std::process::ExitCode;
 use value::Builtin;
 
 const USAGE: &str = "\
-usage: qcalcp                         GTK window (terminal UI when there's no display)
-       qcalcp gui [FILE.m]            GTK window, FILE loaded and run
-       qcalcp tui [FILE.m]            terminal UI, FILE run first
-       qcalcp FILE.m|- [opts]         run script (- = stdin), render its figures
-       qcalcp DATA [opts]             load .csv .tsv .txt .dat .xlsx .xls .xlsm .ods: size, column stats
+usage: EduCalc                         GTK window (terminal UI when there's no display)
+       EduCalc gui [FILE.m]            GTK window, FILE loaded and run
+       EduCalc tui [FILE.m]            terminal UI, FILE run first
+       EduCalc FILE.m|- [opts]         run script (- = stdin), render its figures
+       EduCalc DATA [opts]             load .csv .tsv .txt .dat .xlsx .xls .xlsm .ods: size, column stats
                                       and a plot (first column = x when there are several)
-       qcalcp -e CODE [opts]          evaluate Octave code
-       qcalcp plot EXPR [A:B] [opts]  plot f(x), or surface if EXPR uses y
-       qcalcp MATH... [opts]          calculate like qalc: 5 km to mi, 'integrate(x^2, 0, 3)',
+       EduCalc -e CODE [opts]          evaluate Octave code
+       EduCalc plot EXPR [A:B] [opts]  plot f(x), or surface if EXPR uses y
+       EduCalc MATH... [opts]          calculate like qalc: 5 km to mi, 'integrate(x^2, 0, 3)',
                                       'solve(x^2 = 4)', 'plot(sin(x)/x, -20, 20)'
 opts:  -o OUT.png|OUT.svg   save figures (figure 2 -> OUT-2.png ...); MATH also saves its visualization;
                             default draws in the terminal
@@ -165,7 +165,7 @@ fn main() -> ExitCode {
     batch(&code, &a)
 }
 
-/// Qalculate-style one-shot: `qcalcp 5 km to mi` prints `5 km → mi = 3.106855961 mi`.
+/// Qalculate-style one-shot: `EduCalc 5 km to mi` prints `5 km → mi = 3.106855961 mi`.
 fn calc(expr: &str, args: &Args) -> ExitCode {
     let mut interp = match cli_interp(&args.sets) {
         Ok(i) => i,
@@ -220,7 +220,7 @@ fn sig(x: f64, n: usize) -> String {
     format!("{:.*e}", n.max(1) - 1, x).parse::<f64>().unwrap_or(x).to_string()
 }
 
-/// `qcalcp FILE.csv`: readmatrix into `data`, print its size and column statistics, plot it.
+/// `EduCalc FILE.csv`: readmatrix into `data`, print its size and column statistics, plot it.
 fn data_file(path: &str, args: &Args) -> ExitCode {
     let mut interp = match cli_interp(&args.sets) {
         Ok(i) => i,
@@ -269,7 +269,7 @@ fn gui_or_tui(script: Option<PathBuf>) -> ExitCode {
     // Only X11/Wayland systems say so through these; Windows and macOS always have a display.
     let no_display = cfg!(all(unix, not(target_os = "macos"))) && ["WAYLAND_DISPLAY", "DISPLAY"].iter().all(|v| std::env::var_os(v).is_none_or(|s| s.is_empty()));
     if no_display {
-        eprintln!("qcalcp: no WAYLAND_DISPLAY/DISPLAY, using the TUI");
+        eprintln!("EduCalc: no WAYLAND_DISPLAY/DISPLAY, using the TUI");
         return run_tui(script);
     }
     match gtk4::init() {
@@ -279,7 +279,7 @@ fn gui_or_tui(script: Option<PathBuf>) -> ExitCode {
             gui::run(script)
         }
         Err(e) => {
-            eprintln!("qcalcp: GTK unavailable ({e}), using the TUI");
+            eprintln!("EduCalc: GTK unavailable ({e}), using the TUI");
             run_tui(script)
         }
     }
@@ -363,7 +363,7 @@ fn numbered(path: &str, k: usize) -> String {
     }
 }
 
-/// `qcalcp plot EXPR [A:B]` -> Octave code: fplot for f(x), fsurf when EXPR uses y.
+/// `EduCalc plot EXPR [A:B]` -> Octave code: fplot for f(x), fsurf when EXPR uses y.
 fn expr_plot(expr: &str, range: Option<&str>) -> String {
     let (a, b) = range.and_then(|r| r.split_once(':')).unwrap_or(("-10", "10"));
     let has_y = expr.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|t| t == "y");
@@ -380,7 +380,7 @@ fn usage(err: &str) -> ExitCode {
         print!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    eprint!("qcalcp: {err}\n{USAGE}");
+    eprint!("EduCalc: {err}\n{USAGE}");
     ExitCode::from(2)
 }
 

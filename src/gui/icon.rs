@@ -4,6 +4,7 @@ use gtk4 as gtk;
 pub(super) fn install() {
     static REGISTER: std::sync::Once = std::sync::Once::new();
     REGISTER.call_once(|| {
+        gtk::glib::set_application_name("EduCalculator");
         gtk::gio::resources_register_include!("qcalcp.gresource").expect("embedded application icons");
     });
     if let Some(display) = gtk::gdk::Display::default() {

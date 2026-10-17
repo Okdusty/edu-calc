@@ -101,7 +101,7 @@ jobs:
           # only Windows itself on PATH: every DLL has to come from the zip
           $env:PATH = "C:\Windows\System32;C:\Windows"
           $env:XDG_CONFIG_HOME = "$env:RUNNER_TEMP\cfg"
-          $exe = (Get-ChildItem build -Recurse -Filter qcalcp.exe | Select-Object -First 1).FullName
+          $exe = (Get-ChildItem build -Recurse -Filter EduCalc.exe | Select-Object -First 1).FullName
           $out = & $exe "5 km to mi" | Out-String; $out
           if ($LASTEXITCODE -or $out -notmatch "3.106855961 mi") { exit 1 }
           $out = & $exe -e "disp(pyeval('2**10'))" | Out-String; $out
@@ -128,5 +128,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --prerelease \
-            --title "qcalcp $GITHUB_REF_NAME (snapshot beta)" \
-            --notes "Snapshot beta. Linux: qcalcp-*-x86_64.AppImage (glibc 2.39+). Windows 10/11: unzip qcalcp-*-win64.zip and run bin\\qcalcp.exe. See the README for what's in it and the known gaps."
+            --title "EduCalculator $GITHUB_REF_NAME (snapshot beta)" \
+            --notes "Snapshot beta. Linux: qcalcp-*-x86_64.AppImage (glibc 2.39+). Windows 10/11: unzip qcalcp-*-win64.zip and run bin\\EduCalc.exe. See the README for what's in it and the known gaps."
