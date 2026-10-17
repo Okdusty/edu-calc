@@ -12,7 +12,8 @@ A calculator, Octave-style interpreter and plotter in one program, with a GTK 4 
 four-row keypad fixed along the bottom; **More functions** opens a second page, and **Hide
 keypad** makes more room. The interface starts light, in degrees, with decimal number bases.
 The **DEG/RAD** button changes the angle unit for both calculations and function graphs.
-Drag the **resize keypad** strip up or down to change its height in Simple or Advanced.
+Drag the **resize keypad** strip up or down to change its height in Simple mode.
+Advanced uses the standard keypad layout without a resize strip.
 Dragging it down gives the graph or data area more room; double-click the strip to reset.
 The focused strip also supports Up/Down and Home. Simple keypads include `x`, `y` and `=`.
 
@@ -129,6 +130,11 @@ Files live in `~/.config/qcalcp/` (Windows: `%LOCALAPPDATA%\qcalcp\`) and are cr
 - `history.txt`: calculator history
 
 ### Development checks
+
+The app embeds its GTK icons and its Windows executable icon. Their source is
+`packaging/qcalcp.svg`; regenerate the checked-in PNG/ICO files with
+`python packaging/generate-icons.py` (requires `rsvg-convert`). Building requires
+`glib-compile-resources` from the GTK development tools and, on MinGW, `windres`.
 
 Run `cargo test --locked -- --test-threads=1` and `cargo build --locked`. On Windows/MSYS2,
 libqalculate's definitions must be beside the executable: copy the contents of

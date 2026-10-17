@@ -1000,6 +1000,8 @@ mod tests {
         let app = gtk::Application::builder().application_id("com.dusty.qcalcp.classroomtest").flags(gio::ApplicationFlags::NON_UNIQUE).build();
         app.register(None::<&gio::Cancellable>).unwrap();
         let ui = super::super::build(&app, None);
+        assert_eq!(gtk::Window::default_icon_name().as_deref(), Some("qcalcp"));
+        assert!(gtk::IconTheme::for_display(&WidgetExt::display(&ui.win)).has_icon("qcalcp"), "embedded application icon is missing");
         let s = ui.simple.borrow().as_ref().unwrap().clone();
         assert!(ui.simple_mode.get());
         assert_eq!(s.tab.get(), SimpleTab::Calculator);

@@ -62,6 +62,7 @@ mod complete;
 mod config;
 mod data;
 mod keypad;
+mod icon;
 mod resize;
 mod simple;
 
@@ -208,6 +209,7 @@ fn ini_path() -> PathBuf {
 }
 
 fn build(app: &gtk::Application, script: Option<PathBuf>) -> Rc<Ui> {
+    icon::install();
     let (mut cfg, warnings) = Config::load(&ini_path());
     let (opts, opt_warn) = qalc::Options::load_ini(&ini_path());
     qalc::set_options(&opts);
@@ -794,8 +796,8 @@ fn apply_layout(ui: &Ui) {
         slot.append(pad);
     }
     ui.calc.body.set_orientation(if right { gtk::Orientation::Horizontal } else { gtk::Orientation::Vertical });
-    pad.set_vexpand(false);
-    pad.set_valign(if right { gtk::Align::Start } else { gtk::Align::Fill });
+    pad.set_vexpand(right);
+    pad.set_valign(gtk::Align::Fill);
     pad.set_visible(shown);
     // number pad beside the mode's keys when the keypad spans the width, below them when it's to the right
     ui.keypad.show(mode, c.number_pad, !calc || !(right || ui.calc.narrow.get()));

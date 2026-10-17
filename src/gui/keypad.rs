@@ -6,6 +6,8 @@ use std::rc::Rc;
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::prelude::*;
+#[cfg(test)]
+mod layout_tests;
 
 /// Placeholder in templates: the selection is wrapped into the first one, Tab moves between them.
 pub const SLOT: char = '□';
@@ -292,8 +294,6 @@ pub fn arrange(pages: &[Page]) -> Vec<Vec<Page>> {
 /// On-screen keypad: one mode block at a time (stack) and the number pad beside or below it.
 pub struct Keypad {
     pub root: gtk::Box,
-    layout: gtk::Box,
-    height: Rc<super::resize::KeypadHeight>,
     modes: gtk::Stack,
     numpad: gtk::Box,
     keys: Vec<(gtk::Button, Act)>,
@@ -320,12 +320,10 @@ impl Keypad {
             }
         }
         // hexpand(false): the buttons' hexpand would take the calculator's width when beside it
-        let layout = gtk::Box::builder().spacing(8).hexpand(false).css_classes(["keypad"]).build();
-        layout.append(&modes);
-        layout.append(&numpad);
-        let height = super::resize::KeypadHeight::new(&layout, 280, 160, 100);
-        let root = height.root.clone();
-        Keypad { root, layout, height, modes, numpad, keys, hex }
+        let root = gtk::Box::builder().spacing(8).hexpand(false).css_classes(["keypad"]).build();
+        root.append(&modes);
+        root.append(&numpad);
+        Keypad { root, modes, numpad, keys, hex }
     }
 
     /// `press` gets each key's action.
@@ -344,14 +342,13 @@ impl Keypad {
             self.modes.set_visible_child_name(mode);
         }
         self.numpad.set_visible(numpad || mode == "numpad");
-        self.layout.set_orientation(if side_by_side { gtk::Orientation::Horizontal } else { gtk::Orientation::Vertical });
-        self.height.set_default_height(if side_by_side || mode == "numpad" { 280 } else { 520 });
+        self.root.set_orientation(if side_by_side { gtk::Orientation::Horizontal } else { gtk::Orientation::Vertical });
     }
 
     /// Width the mode's keys and the number pad need side by side.
     pub fn side_by_side_width(&self) -> i32 {
         let min = |w: &gtk::Widget| w.measure(gtk::Orientation::Horizontal, -1).0;
-        min(self.modes.upcast_ref()) + self.layout.spacing() + min(self.numpad.upcast_ref())
+        min(self.modes.upcast_ref()) + self.root.spacing() + min(self.numpad.upcast_ref())
     }
 
     /// Check the @base key of the input base; A-F only for hexadecimal input.
