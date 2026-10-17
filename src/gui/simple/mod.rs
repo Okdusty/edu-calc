@@ -254,6 +254,7 @@ impl Simple {
         root.append(&workspace);
 
         let pad_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        pad_bar.set_margin_top(18);
         let angle = gtk::ToggleButton::with_label("DEG");
         angle.set_tooltip_text(Some("Degrees. Tap to switch to radians."));
         angle.set_focus_on_click(false);
