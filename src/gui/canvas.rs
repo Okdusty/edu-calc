@@ -21,7 +21,7 @@ use crate::plot::{Axes, Figure, Theme, View};
 type Key = (u64, usize, i32, i32, u64);
 
 /// A press that moved further than this (px) is a drag, not a click/tap.
-const TAP_SLOP: f64 = 8.0;
+pub(super) const TAP_SLOP: f64 = 8.0;
 
 pub struct Canvas {
     pub area: gtk::DrawingArea,
@@ -586,14 +586,33 @@ fn draw(ui: &Ui, area: &gtk::DrawingArea, cr: &cairo::Context, w: i32, h: i32) {
 /// Render at `scale` x the widget size into a cairo surface drawn back at widget size, plus the
 /// axes frames in widget pixels.
 pub(super) fn surface(fig: &Figure, theme: &Theme, w: i32, h: i32, scale: f64) -> Result<(cairo::ImageSurface, Vec<Frame>), String> {
+    pixels(fig, theme, w, h, scale)?.surface()
+}
+
+/// The thread-safe half of `surface`: ARGB32 rows and the frames, cairo-free so a render thread can make them.
+pub(super) struct Pixels {
+    data: Vec<u8>,
+    size: (i32, i32, i32, i32),
+    stride: i32,
+    frames: Vec<Frame>,
+}
+
+pub(super) fn pixels(fig: &Figure, theme: &Theme, w: i32, h: i32, scale: f64) -> Result<Pixels, String> {
     let (pw, ph) = (((w as f64 * scale).round() as i32).max(1), ((h as f64 * scale).round() as i32).max(1));
     let (rgb, frames) = crate::plot::render::render_frames(fig, theme, pw as u32, ph as u32)?;
     let stride = cairo::Format::ARgb32.stride_for_width(pw as u32).map_err(|e| e.to_string())?;
     let data = argb(&rgb, pw as usize, ph as usize, stride as usize).ok_or("renderer returned a short buffer")?;
-    let s = cairo::ImageSurface::create_for_data(data, cairo::Format::ARgb32, pw, ph, stride).map_err(|e| e.to_string())?;
     let k = pw as f64 / w.max(1) as f64;
-    s.set_device_scale(k, ph as f64 / h.max(1) as f64);
-    Ok((s, frames.into_iter().map(|f| f.scaled(k)).collect()))
+    Ok(Pixels { data, size: (w.max(1), h.max(1), pw, ph), stride, frames: frames.into_iter().map(|f| f.scaled(k)).collect() })
+}
+
+impl Pixels {
+    pub fn surface(self) -> Result<(cairo::ImageSurface, Vec<Frame>), String> {
+        let (w, h, pw, ph) = self.size;
+        let s = cairo::ImageSurface::create_for_data(self.data, cairo::Format::ARgb32, pw, ph, self.stride).map_err(|e| e.to_string())?;
+        s.set_device_scale(pw as f64 / w as f64, ph as f64 / h as f64);
+        Ok((s, self.frames))
+    }
 }
 
 /// Data cursor on top of the plot: dashed crosshair (2D), ring marker, readout box next to it

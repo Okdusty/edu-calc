@@ -96,8 +96,9 @@ headerbar button, .plot-bar button { min-height: 36px; min-width: 36px; }
 .keypad { padding: 4px; }
 .keypad button { min-height: 44px; min-width: 40px; padding-left: 4px; padding-right: 4px; font-size: 1.15em; }
 .keypad .op { font-weight: bold; }
-.keypad-height-grip { min-height: 22px; background: alpha(#718096, 0.14); font-size: 12px; }
-.keypad-height-grip:hover, .keypad-height-grip:focus { background: alpha(#718096, 0.3); }
+.keypad-height-grip { min-height: 12px; }
+.keypad-height-handle { min-width: 48px; min-height: 4px; border-radius: 2px; background: alpha(currentColor, 0.25); }
+.keypad-height-grip:hover .keypad-height-handle, .keypad-height-grip:focus .keypad-height-handle { background: alpha(currentColor, 0.5); }
 .calc-bases { font-size: 0.9em; }
 .completion row { padding: 2px 6px; }
 .completion .desc { font-size: 0.85em; }
@@ -691,7 +692,10 @@ fn actions(app: &gtk::Application, ui: &Rc<Ui>) {
             ui.win.fullscreen();
         }
     });
-    action(app, ui, "data", |ui| data::open(ui, None));
+    action(app, ui, "data", |ui| {
+        let shared = matches!(ui.interp.borrow().vars.get("data"), Some(Value::Num(_) | Value::Bool(_)));
+        data::open(ui, shared.then_some("data"));
+    });
     let a = gio::SimpleAction::new("edit-var", Some(glib::VariantTy::STRING));
     let u = ui.clone();
     a.connect_activate(move |_, v| {
@@ -970,15 +974,17 @@ fn show_simple(ui: &Rc<Ui>, simple: bool) {
         if ui.plot_side.is_visible() { cfg.split = ui.main.position(); }
         cfg.editor_split = ui.edit_paned.position();
     }
+    // one table on both sides: Simple's Data tab is the workspace's `data`
+    let table = ui.simple.borrow().as_ref().map(|s| s.data.clone());
+    if let Some(t) = table {
+        if simple { t.pull() } else { t.push() }
+    }
     ui.simple_mode.set(simple);
     let name = if simple { "simple" } else { "advanced" };
     ui.shell.set_visible_child_name(name);
     ui.headers.set_visible_child_name(name);
-    if let Some(settings) = gtk::Settings::default() {
-        settings.set_gtk_application_prefer_dark_theme(!simple && ui.cfg.borrow().dark);
-    }
     if simple {
-        ui.win.set_title(Some("EduCalc — Simple"));
+        ui.win.set_title(Some("EduCalc"));
         if let Some(s) = ui.simple.borrow().as_ref() { s.focus(); }
     } else {
         update_title(ui); apply_layout(ui); focus_mode(ui);
@@ -1111,12 +1117,12 @@ fn sync(ui: &Ui) {
 
 fn update_title(ui: &Ui) {
     if ui.simple_mode.get() {
-        ui.win.set_title(Some("EduCalc — Simple"));
+        ui.win.set_title(Some("EduCalc"));
         return;
     }
     let name = ui.file.borrow().as_ref().and_then(|p| p.file_name()).map_or("untitled".into(), |n| n.to_string_lossy().into_owned());
     let mark = if ui.editor.buffer().is_modified() { "*" } else { "" };
-    ui.win.set_title(Some(&format!("{mark}{name} — EduCalc")));
+    ui.win.set_title(Some(&format!("{mark}{name} - EduCalc")));
 }
 
 fn save_state(ui: &Ui) {

@@ -78,6 +78,28 @@ impl Ed {
         });
     }
 
+    /// Simple -> Advanced: unsent table edits become the workspace's `data` (plus X, Y... per named column).
+    pub fn push(self: &Rc<Self>) {
+        if self.dirty.get() {
+            to_workspace(self);
+        }
+    }
+
+    /// Advanced -> Simple: a `data` that Octave changed meanwhile fills the table; unsent edits win.
+    pub fn pull(self: &Rc<Self>) {
+        let m = match self.ui.interp.borrow().vars.get(&self.var()) {
+            Some(Value::Num(m) | Value::Bool(m)) => m.clone(),
+            _ => return,
+        };
+        let cur = self.table().1;
+        let same = (cur.rows, cur.cols) == (m.rows, m.cols) && cur.data.iter().zip(&m.data).all(|(a, b)| a == b || a.is_nan() && b.is_nan());
+        if self.dirty.get() || same {
+            return;
+        }
+        set_grid(self, with_names(self.grid().swap_remove(0), &m), (1, 0));
+        refresh(self);
+    }
+
     pub fn set_keypad_shown(&self, shown: bool) {
         self.keypad_shown.set(shown);
         if let Some((entry, item, _)) = self.active.borrow().as_ref() {
@@ -165,9 +187,7 @@ fn create(ui: &Rc<Ui>, var: Option<&str>, embedded: bool) -> Option<Rc<Ed>> {
                 Some(v) => { ui.print(&format!("Data Editor: {n} is {}, it edits real matrices\n", v.summary()), true); return None; }
                 None => { ui.print(&format!("Data Editor: no variable '{n}'\n"), true); return None; }
             };
-            let cell = |x: f64| if x.is_nan() { String::new() } else { io::fmt_num(x) };
-            let body = (0..m.rows).map(|i| (0..m.cols).map(|j| cell(m.get(i, j))).collect());
-            std::iter::once(vec![String::new(); m.cols]).chain(body).collect()
+            with_names(vec![], &m)
         }
     };
 
@@ -208,27 +228,14 @@ fn create(ui: &Rc<Ui>, var: Option<&str>, embedded: bool) -> Option<Rc<Ed>> {
     let status = gtk::Label::builder().xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).margin_start(8).margin_end(8).margin_top(2).margin_bottom(4).build();
     let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
     if embedded {
-        let tools = gtk::Box::new(gtk::Orientation::Vertical, 4);
-        tools.add_css_class("simple-data-tools");
-        let rows = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        for (label, action) in [("Add Row", "ed.add-row"), ("Delete Row", "ed.del-row"), ("Add Column", "ed.add-col"), ("Delete Column", "ed.del-col")] {
-            let b = gtk::Button::builder().label(label).action_name(action).focus_on_click(false).build();
-            rows.append(&b);
+        // the standalone header's buttons as a slim toolbar; rows and columns stay in the ⋮ menu
+        let tools = gtk::Box::builder().spacing(2).css_classes(["toolbar"]).build();
+        for w in [import_b.upcast_ref::<gtk::Widget>(), export_b.upcast_ref(), paste_b.upcast_ref(), more.upcast_ref(), sheets.upcast_ref()] {
+            header.remove(w);
+            w.set_focus_on_click(false);
+            tools.append(w);
         }
-        tools.append(&gtk::ScrolledWindow::builder().child(&rows).vscrollbar_policy(gtk::PolicyType::Never).propagate_natural_height(true).build());
-        let files = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        // These controls have not yet been parented outside the standalone header.
-        for (b, label) in [(&paste_b, "Paste"), (&import_b, "Import"), (&export_b, "Export Table")] {
-            header.remove(b);
-            b.set_label(label);
-            b.set_focus_on_click(false);
-            files.append(b);
-        }
-        header.remove(&more);
-        tools.append(&files);
-        header.remove(&sheets);
         body.append(&tools);
-        body.append(&sheets);
     }
     body.append(&gtk::ScrolledWindow::builder().child(&cv).vexpand(true).build());
     body.append(&stats_box);
@@ -345,6 +352,13 @@ fn create(ui: &Rc<Ui>, var: Option<&str>, embedded: bool) -> Option<Rc<Ed>> {
     refresh(&ed);
     if !embedded { ed.win.present(); }
     Some(ed)
+}
+
+/// Names row (padded to the width) above the matrix; NaN shows blank.
+fn with_names(mut names: Vec<String>, m: &Matrix) -> Grid {
+    names.resize(m.cols, String::new());
+    let cell = |x: f64| if x.is_nan() { String::new() } else { io::fmt_num(x) };
+    std::iter::once(names).chain((0..m.rows).map(|i| (0..m.cols).map(|j| cell(m.get(i, j))).collect())).collect()
 }
 
 fn set_class(w: &impl IsA<gtk::Widget>, class: &str, on: bool) {

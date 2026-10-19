@@ -21,32 +21,62 @@ use std::time::Duration;
 use worker::{Job, Reply};
 
 pub const CSS: &str = "
-.simple { background: #f4f7fb; color: #182639; font-size: 18px; }
-.simple button, headerbar.simple button, .simple menubutton, .simple dropdown { min-height: 56px; min-width: 48px; padding: 0 10px; }
-.simple entry { min-height: 56px; font-size: 22px; background: #fff; color: #182639; }
-.simple entry:focus-within { outline: 3px solid #2878d1; outline-offset: -3px; }
-.simple .error { color: #a51d2d; }
-.simple .warning { background: #fff0d8; color: #823600; }
-.simple .simple-hint { font-size: 15px; color: #52647a; }
-.simple .simple-result { font-size: 32px; font-weight: bold; }
-.simple .simple-card { background: #fff; border: 1px solid #d8e1ed; border-radius: 8px; padding: 10px; }
-.simple .simple-keypad { background: #e5ebf3; padding: 6px; }
-.simple .simple-keypad button { font-size: 22px; min-height: 28px; transition: background-color 120ms ease-in-out; }
-.simple .simple-keypad .suggested-action { background: #226ccc; color: #fff; }
-.simple .simple-keypad .number { background: #fff; color: #182639; }
-.simple .simple-keypad .number:hover { background: #dce5ef; }
-.simple .simple-keypad .number:active { background: #c6d5e6; }
-.simple .simple-data-tools button { min-height: 36px; min-width: 0; padding: 0 8px; font-size: 15px; }
-.simple .simple-tabs button:checked { background: #226ccc; color: #fff; }
-.simple columnview { background: #fff; color: #182639; }
-.simple .simple-stats { background: #fff; padding: 10px; border-radius: 8px; }
+.simple-result { font-size: 1.6em; font-weight: bold; }
+.simple-preview { font-size: 1.3em; }
+.simple-entry { font-size: 1.3em; min-height: 44px; }
+.simple-card { padding: 6px 10px; border-radius: 8px; background: alpha(currentColor, 0.05); }
+.simple-keypad button { min-height: 30px; }
+.simple-side button { padding-left: 8px; padding-right: 8px; }
 ";
+
+/// Function pages (5 x 4) behind the side column's page buttons: (name, button, keys); □ marks a slot.
+const PAGES: [(&str, &str, &[(&str, &str)]); 3] = [
+    (
+        "basic",
+        "Basic",
+        &[
+            ("x", "x"), ("y", "y"), ("x²", "□²"), ("aᵇ", "□^□"), ("√", "√(□)"),
+            ("(", "("), (")", ")"), ("a/b", "□/□"), ("|a|", "abs(□)"), ("π", "π"),
+            ("sin", "sin(□)"), ("cos", "cos(□)"), ("tan", "tan(□)"), ("e", "e"), ("%", "%"),
+            ("ln", "ln(□)"), ("log", "log10(□)"), ("n!", "□!"), ("1/x", "1/□"), (",", ","),
+        ],
+    ),
+    (
+        "functions",
+        "f(x)",
+        &[
+            ("∛", "∛(□)"), ("ⁿ√", "root(□, □)"), ("eˣ", "e^□"), ("10ˣ", "10^□"), ("logₐ", "log(□, □)"),
+            ("nCr", "binomial(□, □)"), ("nPr", "perm(□, □)"), ("gcd", "gcd(□, □)"), ("lcm", "lcm(□, □)"), ("mod", "mod(□, □)"),
+            ("round", "round(□)"), ("floor", "floor(□)"), ("ceil", "ceil(□)"), ("|a|", "abs(□)"), ("π", "π"),
+            ("x", "x"), ("(", "("), (")", ")"), (",", ","), ("aᵇ", "□^□"),
+        ],
+    ),
+    (
+        "trig",
+        "Trig",
+        &[
+            ("sin", "sin(□)"), ("cos", "cos(□)"), ("tan", "tan(□)"), ("π", "π"), ("°", "°"),
+            ("sin⁻¹", "asin(□)"), ("cos⁻¹", "acos(□)"), ("tan⁻¹", "atan(□)"), ("x", "x"), ("aᵇ", "□^□"),
+            ("sec", "sec(□)"), ("csc", "csc(□)"), ("cot", "cot(□)"), ("(", "("), (")", ")"),
+            ("sinh", "sinh(□)"), ("cosh", "cosh(□)"), ("tanh", "tanh(□)"), ("a/b", "□/□"), ("√", "√(□)"),
+        ],
+    ),
+];
+/// Number pad, 6 x 4; Enter takes two columns.
+const NUMBERS: &[(&str, &str)] = &[
+    ("7", "7"), ("8", "8"), ("9", "9"), ("÷", "÷"), ("⌫", "@back"), ("Clear", "@clear"),
+    ("4", "4"), ("5", "5"), ("6", "6"), ("×", "×"), ("←", "@left"), ("→", "@right"),
+    ("1", "1"), ("2", "2"), ("3", "3"), ("−", "−"), ("Ans", "@ans"), ("Next □", "@slot"),
+    ("0", "0"), (".", "."), ("=", "="), ("+", "+"), ("Enter", "@enter"),
+];
+/// Number-pad keys a table cell has no use for: dimmed on the Data tab.
+const CALC_ONLY: &[&str] = &["÷", "×", "+", "=", "@ans", "@slot"];
 
 struct GraphRow {
     id: usize,
     root: gtk::Box,
     entry: gtk::Entry,
-    visible: gtk::ToggleButton,
+    visible: gtk::CheckButton,
     error: gtk::Label,
     color: plot::Rgb,
 }
@@ -57,7 +87,6 @@ pub struct Simple {
     ui: Weak<Ui>,
     tab: Cell<SimpleTab>,
     stack: gtk::Stack,
-    tabs: Vec<gtk::ToggleButton>,
     entry: gtk::Entry,
     preview: gtk::Label,
     message: gtk::Label,
@@ -83,12 +112,10 @@ pub struct Simple {
     selectors_busy: Cell<bool>,
     keypad: gtk::Box,
     keypad_height: Rc<super::resize::KeypadHeight>,
+    side_keys: gtk::Box,
     function_keys: gtk::Stack,
-    more: gtk::ToggleButton,
-    angle: gtk::ToggleButton,
-    pad_bar: gtk::Box,
-    calculator_controls: gtk::Box,
-    keypad_toggle: gtk::Button,
+    numbers: RefCell<Option<gtk::Grid>>,
+    calc_keys: RefCell<Vec<gtk::Button>>,
     sender: mpsc::Sender<Job>,
     calc_rev: Arc<AtomicU64>,
     graph_rev: Arc<AtomicU64>,
@@ -99,6 +126,14 @@ pub struct Simple {
 
 fn label(text: &str) -> gtk::Label {
     gtk::Label::builder().label(text).xalign(0.0).wrap(true).wrap_mode(gtk::pango::WrapMode::WordChar).build()
+}
+/// A label that takes no space while it has no text.
+fn note(class: &str) -> gtk::Label {
+    let l = label("");
+    l.add_css_class(class);
+    l.set_visible(false);
+    l.connect_label_notify(|l| l.set_visible(!l.text().is_empty()));
+    l
 }
 fn column(spacing: i32) -> gtk::Box {
     gtk::Box::new(gtk::Orientation::Vertical, spacing)
@@ -130,148 +165,128 @@ fn slot_navigation(input: &gtk::Entry) {
 
 impl Simple {
     pub fn new(ui: &Rc<Ui>) -> Rc<Self> {
-        let root = column(6);
-        root.add_css_class("simple");
+        let root = column(0);
+        let stack = gtk::Stack::builder().vexpand(true).hexpand(true).vhomogeneous(false).hhomogeneous(false).build();
         let header = gtk::HeaderBar::new();
-        header.add_css_class("simple");
-        let nav = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        nav.add_css_class("simple-tabs");
-        let mut tabs = vec![];
-        for tab in [SimpleTab::Calculator, SimpleTab::Graph, SimpleTab::Data] {
-            let button = gtk::ToggleButton::with_label(tab.name());
-            if let Some(first) = tabs.first() {
-                button.set_group(Some(first));
-            }
-            button.set_focus_on_click(false);
-            nav.append(&button);
-            tabs.push(button);
-        }
-        header.pack_start(&nav);
-        let advanced = gtk::Button::with_label("Advanced");
-        advanced.set_focus_on_click(false);
-        header.pack_end(&advanced);
+        header.set_title_widget(Some(&gtk::StackSwitcher::builder().stack(&stack).build()));
+        let advanced = gtk::Button::builder().label("Advanced").tooltip_text("Octave scripts, plots and all calculator options (F2)").focus_on_click(false).build();
+        header.pack_start(&advanced);
         let menu = gio::Menu::new();
         menu.append(Some("Fullscreen"), Some("app.fullscreen"));
         menu.append(Some("Export chart…"), Some("app.simple-export"));
-        let menu_button = gtk::MenuButton::builder().label("Menu").menu_model(&menu).build();
+        let menu_button = gtk::MenuButton::builder().icon_name("open-menu-symbolic").menu_model(&menu).tooltip_text("Menu").has_frame(false).build();
         header.pack_end(&menu_button);
-        let stack = gtk::Stack::builder().vexpand(true).hexpand(true).vhomogeneous(false).hhomogeneous(false).build();
-        let work = column(8);
+        let keypad_toggle =
+            gtk::Button::builder().icon_name("input-keyboard-symbolic").tooltip_text("Show or hide the keypad (F9)").has_frame(false).focus_on_click(false).build();
+        header.pack_end(&keypad_toggle);
+
+        let work = column(6);
+        work.set_margin_top(6);
+        work.set_margin_bottom(6);
         work.set_margin_start(12);
         work.set_margin_end(12);
-        let history = column(8);
+        let history = column(6);
         history.set_valign(gtk::Align::End);
         let history_scroll = scroll(&history);
         work.append(&history_scroll);
-        let intro = label("Enter a calculation. Tap an earlier answer to use it again.");
-        intro.add_css_class("simple-hint");
-        let entry = gtk::Entry::builder().placeholder_text("Try 12 × 8, 3/4 + 1/2, or sin(30)").hexpand(true).build();
-        entry.set_input_hints(gtk::InputHints::INHIBIT_OSK);
-        slot_navigation(&entry);
-        let preview = label("");
-        preview.add_css_class("simple-result");
+        let preview = note("simple-preview");
         preview.set_selectable(true);
         work.append(&preview);
-        let message = label("");
-        message.add_css_class("error");
+        let message = note("error");
         work.append(&message);
-        for text in [&preview, &message] {
-            text.set_visible(false);
-            text.connect_label_notify(|text| text.set_visible(!text.text().is_empty()));
-        }
-        work.append(&intro);
-        work.append(&entry);
-        let controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let fraction = gtk::ToggleButton::with_label("Decimal result");
-        controls.append(&fraction);
-        let graph_this = gtk::Button::with_label("Graph this");
-        graph_this.set_sensitive(false);
-        controls.append(&graph_this);
-        stack.add_named(&work, Some("Calculator"));
+        let entry = gtk::Entry::builder().placeholder_text("Try 12 × 8, 3/4 + 1/2, or sin(30)").hexpand(true).css_classes(["simple-entry"]).build();
+        entry.set_input_hints(gtk::InputHints::INHIBIT_OSK);
+        slot_navigation(&entry);
+        let fraction = gtk::ToggleButton::builder().label("Decimal").tooltip_text("Show results as decimals instead of fractions").focus_on_click(false).build();
+        let graph_this = gtk::Button::builder().label("Graph").tooltip_text("Graph this function of x").sensitive(false).focus_on_click(false).build();
+        let input = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        input.append(&entry);
+        input.append(&fraction);
+        input.append(&graph_this);
+        work.append(&input);
+        stack.add_titled(&work, Some("Calculator"), "Calculator");
 
-        let graph = Board::new(true);
-        graph.root.remove(&graph.tools);
-        graph.root.prepend(&gtk::ScrolledWindow::builder()
-            .child(&graph.tools)
-            .vscrollbar_policy(gtk::PolicyType::Never)
-            .propagate_natural_height(true)
-            .build());
-        let graph_list = column(8);
-        let graph_left = column(6);
-        graph_left.set_width_request(310);
-        let hint = label("Functions of x");
-        graph_left.append(&hint);
+        let graph = Board::new(ui, true);
+        let graph_list = column(4);
+        let graph_left = column(4);
+        graph_left.set_margin_start(6);
+        graph_left.set_margin_top(6);
+        graph_left.set_width_request(240);
         graph_left.append(&scroll(&graph_list));
-        let add_graph = gtk::Button::with_label("+ Add function");
+        let add_graph = gtk::Button::builder().label("Add function").css_classes(["flat"]).halign(gtk::Align::Start).focus_on_click(false).build();
         graph_left.append(&add_graph);
         let graph_pane = gtk::Paned::builder()
             .orientation(gtk::Orientation::Horizontal)
             .start_child(&graph_left)
             .end_child(&graph.root)
-            .position(340)
+            .position(280)
+            .resize_start_child(false)
             .shrink_start_child(false)
             .shrink_end_child(false)
-            .wide_handle(true)
             .build();
-        stack.add_named(&graph_pane, Some("Graph"));
+        stack.add_titled(&graph_pane, Some("Graph"), "Graph");
 
         let data = data::embedded(ui);
-        let data_board = Board::new(false);
+        let data_board = Board::new(ui, false);
         let chart = gtk::DropDown::from_strings(&["Scatter", "Line", "Bar", "Histogram"]);
         let xcol = gtk::DropDown::from_strings(&["Row number", "X", "Y"]);
         xcol.set_selected(1);
         let ycol = gtk::DropDown::from_strings(&["X", "Y"]);
         ycol.set_selected(1);
-        let data_right = column(6);
-        let selectors = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let selectors = gtk::Box::builder().spacing(6).css_classes(["toolbar"]).build();
         selectors.append(&chart);
-        selectors.append(&label("X"));
-        selectors.append(&xcol);
-        selectors.append(&label("Y / values"));
-        selectors.append(&ycol);
-        data_board.root.remove(&data_board.tools);
-        selectors.append(&data_board.tools);
-        // Horizontal scrolling keeps touch controls reachable at increased display scaling.
-        data_right.append(&gtk::ScrolledWindow::builder().child(&selectors).vscrollbar_policy(gtk::PolicyType::Never).propagate_natural_height(true).build());
+        for (name, d) in [("x", &xcol), ("y", &ycol)] {
+            let l = gtk::Label::builder().label(name).margin_start(6).css_classes(["dim-label"]).build();
+            selectors.append(&l);
+            selectors.append(d);
+        }
+        let data_right = column(0);
+        data_right.append(&selectors);
         data_right.append(&data_board.root);
-        let stats = label("Enter data to see statistics.");
-        stats.add_css_class("simple-stats");
+        let stats = label("");
+        stats.set_margin_start(8);
+        stats.set_margin_end(8);
+        stats.set_margin_bottom(6);
         data_right.append(&stats);
         let data_pane = gtk::Paned::builder()
             .orientation(gtk::Orientation::Horizontal)
             .start_child(&data.root)
             .end_child(&data_right)
-            .position(460)
+            .position(300)
+            .resize_start_child(false)
             .shrink_start_child(false)
             .shrink_end_child(false)
-            .wide_handle(true)
             .build();
-        stack.add_named(&data_pane, Some("Data"));
+        stack.add_titled(&data_pane, Some("Data"), "Data");
         // Keep the keypad reachable on boards with a small logical viewport. The
         // workspace can scroll vertically instead of forcing the window offscreen.
         let workspace = scroll(&stack);
         workspace.set_min_content_height(80);
         root.append(&workspace);
 
-        let pad_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        pad_bar.set_margin_top(18);
-        let angle = gtk::ToggleButton::with_label("DEG");
-        angle.set_tooltip_text(Some("Degrees. Tap to switch to radians."));
-        angle.set_focus_on_click(false);
-        let more = gtk::ToggleButton::with_label("More functions");
-        more.set_focus_on_click(false);
-        let keypad_toggle = gtk::Button::with_label("Hide keypad");
-        keypad_toggle.set_focus_on_click(false);
-        pad_bar.append(&angle);
-        pad_bar.append(&more);
-        pad_bar.append(&keypad_toggle);
-        pad_bar.append(&controls);
-        root.append(&pad_bar);
-        let keypad = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        let angle = gtk::ToggleButton::builder().label("DEG").tooltip_text("Degrees. Tap for radians.").focus_on_click(false).build();
+        let side_keys = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(4).homogeneous(true).css_classes(["simple-side"]).build();
+        let keypad = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        keypad.add_css_class("keypad");
         keypad.add_css_class("simple-keypad");
+        keypad.append(&side_keys);
         let function_keys = gtk::Stack::builder().hexpand(true).hhomogeneous(true).vhomogeneous(true).build();
+        let mut first: Option<gtk::ToggleButton> = None;
+        for (name, face, _) in PAGES {
+            let page = gtk::ToggleButton::builder().label(face).active(first.is_none()).focus_on_click(false).build();
+            page.set_group(first.as_ref());
+            let stack = function_keys.clone();
+            page.connect_toggled(move |b| {
+                if b.is_active() {
+                    stack.set_visible_child_name(name);
+                }
+            });
+            side_keys.append(&page);
+            first.get_or_insert(page);
+        }
+        side_keys.append(&angle);
         keypad.append(&function_keys);
-        let keypad_height = super::resize::KeypadHeight::new(&keypad, 256, 160, 260);
+        let keypad_height = super::resize::KeypadHeight::new(&keypad, 200, 140, 240);
         root.append(&keypad_height.root);
         let calc_rev = Arc::new(AtomicU64::new(0));
         let graph_rev = Arc::new(AtomicU64::new(0));
@@ -282,7 +297,6 @@ impl Simple {
             ui: Rc::downgrade(ui),
             tab: Cell::new(SimpleTab::Calculator),
             stack,
-            tabs,
             entry,
             preview,
             message,
@@ -308,12 +322,10 @@ impl Simple {
             selectors_busy: Cell::new(false),
             keypad,
             keypad_height,
+            side_keys,
             function_keys,
-            more,
-            angle: angle.clone(),
-            pad_bar,
-            calculator_controls: controls,
-            keypad_toggle,
+            numbers: RefCell::new(None),
+            calc_keys: RefCell::new(vec![]),
             sender,
             calc_rev,
             graph_rev,
@@ -322,20 +334,22 @@ impl Simple {
             data_pending: RefCell::new(None),
         });
         s.build_keypad();
-        for (button, tab) in s.tabs.iter().zip([SimpleTab::Calculator, SimpleTab::Graph, SimpleTab::Data]) {
-            let weak = Rc::downgrade(&s);
-            button.connect_toggled(move |b| {
-                if b.is_active() {
-                    if let Some(s) = weak.upgrade() {
-                        s.select(tab);
-                    }
-                }
-            });
-        }
+        let weak = Rc::downgrade(&s);
+        s.stack.connect_visible_child_name_notify(move |_| {
+            if let Some(s) = weak.upgrade() {
+                s.sync_tab();
+            }
+        });
         let weak = Rc::downgrade(ui);
         advanced.connect_clicked(move |_| {
             if let Some(ui) = weak.upgrade() {
                 super::show_simple(&ui, false);
+            }
+        });
+        let weak = Rc::downgrade(&s);
+        keypad_toggle.connect_clicked(move |_| {
+            if let Some(s) = weak.upgrade() {
+                s.toggle_keypad();
             }
         });
         let weak = Rc::downgrade(&s);
@@ -387,21 +401,9 @@ impl Simple {
             }
         });
         let weak = Rc::downgrade(&s);
-        s.more.connect_toggled(move |_| {
-            if let Some(s) = weak.upgrade() {
-                s.show_keys();
-            }
-        });
-        let weak = Rc::downgrade(&s);
-        s.keypad_toggle.connect_clicked(move |_| {
-            if let Some(s) = weak.upgrade() {
-                s.toggle_keypad();
-            }
-        });
-        let weak = Rc::downgrade(&s);
         s.graph.connect_changed(move || {
             if let Some(s) = weak.upgrade() {
-                s.queue_graph(false);
+                s.queue_graph(true); // the board throttles gestures itself
             }
         });
         let weak = Rc::downgrade(&s);
@@ -434,7 +436,7 @@ impl Simple {
             s.history_card(&record);
         }
         s.add_graph("");
-        s.select(SimpleTab::Calculator);
+        s.sync_tab();
         s.refresh_data();
         let weak = Rc::downgrade(&s);
         let a = gio::SimpleAction::new("simple-export", None);
@@ -450,14 +452,16 @@ impl Simple {
     }
 
     pub fn select(&self, tab: SimpleTab) {
-        self.tab.set(tab);
         self.stack.set_visible_child_name(tab.name());
-        let i = match tab {
-            SimpleTab::Calculator => 0,
-            SimpleTab::Graph => 1,
-            SimpleTab::Data => 2,
-        };
-        self.tabs[i].set_active(true);
+        self.sync_tab();
+    }
+    /// The header's stack switcher and select() both land here.
+    fn sync_tab(&self) {
+        self.tab.set(match self.stack.visible_child_name().as_deref() {
+            Some("Graph") => SimpleTab::Graph,
+            Some("Data") => SimpleTab::Data,
+            _ => SimpleTab::Calculator,
+        });
         self.show_keys();
         self.focus();
     }
@@ -486,7 +490,6 @@ impl Simple {
         let show = !self.keypad.is_visible();
         self.keypad.set_visible(show);
         self.keypad_height.root.set_visible(show);
-        self.keypad_toggle.set_label(if show { "Hide keypad" } else { "Show keypad" });
         self.entry.set_input_hints(if show { gtk::InputHints::INHIBIT_OSK } else { gtk::InputHints::NONE });
         self.data.set_keypad_shown(show);
         for row in self.graph_rows.borrow().iter() {
@@ -494,37 +497,16 @@ impl Simple {
         }
     }
     fn show_keys(&self) {
+        // the table takes numbers only: no function keys, and a number pad that doesn't span the window
         let data = self.tab.get() == SimpleTab::Data;
-        let graph = self.tab.get() == SimpleTab::Graph;
-        let functions = if graph { &self.graph.tools } else { &self.pad_bar };
-        for button in [&self.angle, &self.more] {
-            if button.parent().as_ref() != Some(functions.upcast_ref()) {
-                if let Some(parent) = button.parent().and_downcast::<gtk::Box>() {
-                    parent.remove(button);
-                }
-                functions.append(button);
-            }
+        self.side_keys.set_visible(!data);
+        self.function_keys.set_visible(!data);
+        if let Some(numbers) = &*self.numbers.borrow() {
+            numbers.set_halign(if data { gtk::Align::Center } else { gtk::Align::Fill });
         }
-        let destination = if data { &self.data_board.tools } else { functions };
-        if self.keypad_toggle.parent().as_ref() != Some(destination.upcast_ref()) {
-            if let Some(parent) = self.keypad_toggle.parent().and_downcast::<gtk::Box>() {
-                parent.remove(&self.keypad_toggle);
-            }
-            destination.append(&self.keypad_toggle);
+        for b in self.calc_keys.borrow().iter() {
+            b.set_sensitive(!data);
         }
-        if self.tab.get() == SimpleTab::Calculator {
-            self.pad_bar.reorder_child_after(&self.calculator_controls, Some(&self.keypad_toggle));
-        }
-        self.pad_bar.set_visible(self.tab.get() == SimpleTab::Calculator);
-        self.more.set_visible(!data);
-        self.angle.set_visible(!data);
-        self.function_keys.set_visible_child_name(if self.tab.get() == SimpleTab::Data {
-            "data"
-        } else if self.more.is_active() {
-            "more"
-        } else {
-            "basic"
-        });
     }
     pub fn export(&self) {
         let Some(ui) = self.ui.upgrade() else { return };
@@ -550,95 +532,29 @@ impl Simple {
     }
 
     fn build_keypad(self: &Rc<Self>) {
-        let pages: [(&str, &[(&str, &str)]); 3] = [
-            (
-                "basic",
-                &[
-                    ("x", "x"),
-                    ("y", "y"),
-                    ("x²", "□²"),
-                    ("aᵇ", "□^□"),
-                    ("(", "("),
-                    (")", ")"),
-                    ("a/b", "□/□"),
-                    ("√", "√(□)"),
-                    ("sin", "sin(□)"),
-                    ("cos", "cos(□)"),
-                    ("tan", "tan(□)"),
-                    ("π", "π"),
-                    ("←", "@left"),
-                    ("→", "@right"),
-                    ("Next □", "@slot"),
-                    ("Ans", "@ans"),
-                ],
-            ),
-            (
-                "more",
-                &[
-                    ("abs", "abs(□)"),
-                    ("∛", "∛(□)"),
-                    ("1/x", "1/□"),
-                    ("%", "%"),
-                    ("asin", "asin(□)"),
-                    ("acos", "acos(□)"),
-                    ("atan", "atan(□)"),
-                    ("e", "e"),
-                    ("ln", "ln(□)"),
-                    ("log₁₀", "log10(□)"),
-                    ("!", "!"),
-                    ("10ˣ", "10^□"),
-                    ("←", "@left"),
-                    ("→", "@right"),
-                    ("Next □", "@slot"),
-                    ("Ans", "@ans"),
-                ],
-            ),
-            ("data", &[("←", "@left"), ("→", "@right"), ("−", "−"), (",", ","), ("Next row", "@enter"), ("Clear cell", "@clear"), ("⌫", "@back"), (".", ".")]),
-        ];
-        for (name, keys) in pages {
-            let grid = self.key_grid(keys, 4);
+        for (name, _, keys) in PAGES {
+            let grid = self.key_grid(keys, 5);
             self.function_keys.add_named(&grid, Some(name));
         }
-        let numbers = self.key_grid(
-            &[
-                ("7", "7"),
-                ("8", "8"),
-                ("9", "9"),
-                ("÷", "÷"),
-                ("⌫", "@back"),
-                ("4", "4"),
-                ("5", "5"),
-                ("6", "6"),
-                ("×", "×"),
-                ("Clear", "@clear"),
-                ("1", "1"),
-                ("2", "2"),
-                ("3", "3"),
-                ("−", "−"),
-                ("=", "="),
-                ("0", "0"),
-                (".", "."),
-                ("Enter", "@enter"),
-                ("+", "+"),
-                (",", ","),
-            ],
-            5,
-        );
+        let numbers = self.key_grid(NUMBERS, 6);
         numbers.set_hexpand(true);
         self.keypad.append(&numbers);
+        *self.numbers.borrow_mut() = Some(numbers);
     }
-    fn key_grid(self: &Rc<Self>, keys: &[(&str, &str)], cols: usize) -> gtk::Grid {
-        let grid = gtk::Grid::builder().row_homogeneous(true).column_homogeneous(true).column_spacing(5).row_spacing(5).build();
-        for (i, (face, action)) in keys.iter().enumerate() {
+    fn key_grid(self: &Rc<Self>, keys: &[(&str, &str)], cols: i32) -> gtk::Grid {
+        let grid = gtk::Grid::builder().row_homogeneous(true).column_homogeneous(true).column_spacing(4).row_spacing(4).build();
+        let mut at = 0;
+        for (face, action) in keys {
             let b = gtk::Button::with_label(face);
             b.set_focus_on_click(false);
             b.set_hexpand(true);
             b.set_vexpand(true);
-            if action.chars().all(|c| c.is_ascii_digit()) {
-                b.add_css_class("number");
-            }
+            let span = if *action == "@enter" { 2 } else { 1 };
             if *action == "@enter" {
                 b.add_css_class("suggested-action");
+            }
+            if CALC_ONLY.contains(action) {
+                self.calc_keys.borrow_mut().push(b.clone());
             }
             let (weak, action) = (Rc::downgrade(self), action.to_string());
             b.connect_clicked(move |_| {
@@ -646,7 +562,8 @@ impl Simple {
                     s.press(&action);
                 }
             });
-            grid.attach(&b, (i % cols) as i32, (i / cols) as i32, 1, 1);
+            grid.attach(&b, at % cols, at / cols, span, 1);
+            at += span;
         }
         grid
     }
@@ -723,32 +640,25 @@ impl Simple {
         self.next_row.set(id + 1);
         let colors = [[36, 105, 205], [205, 66, 64], [25, 139, 91], [139, 72, 192], [188, 112, 15], [17, 134, 151]];
         let color = colors[id % colors.len()];
-        let root = column(4);
-        root.add_css_class("simple-card");
-        let controls = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        let visible = gtk::ToggleButton::with_label("Show");
-        visible.set_active(true);
-        visible.set_focus_on_click(false);
-        let swatch = gtk::DrawingArea::builder().content_width(14).content_height(14).build();
+        let visible = gtk::CheckButton::builder().active(true).tooltip_text("Show on the graph").focus_on_click(false).build();
+        let swatch = gtk::DrawingArea::builder().content_width(12).content_height(12).valign(gtk::Align::Center).build();
         swatch.set_draw_func(move |_, cr, w, h| {
             cr.set_source_rgb(color[0] as f64 / 255.0, color[1] as f64 / 255.0, color[2] as f64 / 255.0);
-            cr.rectangle(0.0, 0.0, w as f64, h as f64);
+            cr.arc(w as f64 / 2.0, h as f64 / 2.0, w.min(h) as f64 / 2.0, 0.0, std::f64::consts::TAU);
             let _ = cr.fill();
         });
-        let remove = gtk::Button::with_label("Delete");
-        remove.set_focus_on_click(false);
-        controls.append(&swatch);
-        controls.append(&label(&format!("{}", id + 1)));
-        controls.append(&visible);
-        controls.append(&remove);
-        root.append(&controls);
         let entry = gtk::Entry::builder().placeholder_text("y = x²").text(text).width_chars(1).hexpand(true).build();
         slot_navigation(&entry);
         entry.set_input_hints(gtk::InputHints::INHIBIT_OSK);
-        root.append(&entry);
-        let error = label("");
-        error.add_css_class("error");
-        error.add_css_class("simple-hint");
+        let remove = gtk::Button::builder().icon_name("edit-delete-symbolic").tooltip_text("Delete").css_classes(["flat"]).focus_on_click(false).build();
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        line.append(&visible);
+        line.append(&swatch);
+        line.append(&entry);
+        line.append(&remove);
+        let root = column(2);
+        root.append(&line);
+        let error = note("error");
         root.append(&error);
         let row = Rc::new(GraphRow { id, root, entry, visible, error, color });
         self.graph_list.append(&row.root);
@@ -824,7 +734,10 @@ impl Simple {
                     .filter(|r| r.visible.is_active() && !r.entry.text().trim().is_empty())
                     .map(|r| (r.id, r.entry.text().to_string()))
                     .collect();
-                let _ = s.sender.send(Job::Graph { id, rows, options: s.options.borrow().clone(), range: s.graph.range() });
+                // half a view more on each side, so a pan shows curve before the next samples land
+                let (lo, hi) = s.graph.range();
+                let pad = (hi - lo) / 2.0;
+                let _ = s.sender.send(Job::Graph { id, rows, options: s.options.borrow().clone(), range: (lo - pad, hi + pad) });
             }
         };
         if immediate {
@@ -877,8 +790,7 @@ impl Simple {
                     return;
                 }
                 let mut fig = self.graph.figure.borrow_mut();
-                fig.axes().series.clear();
-                fig.axes().pins.clear();
+                let old: Vec<String> = fig.axes().series.drain(..).map(|s| s.label).collect();
                 for row in self.graph_rows.borrow().iter() {
                     row.error.set_text("");
                     let Some((_, result)) = rows.iter().find(|(i, _)| *i == row.id) else { continue };
@@ -896,22 +808,32 @@ impl Simple {
                         Err(e) => row.error.set_text(e),
                     }
                 }
+                // pins stay while only the view moved
+                if fig.axes().series.iter().map(|s| &s.label).ne(old.iter()) {
+                    fig.axes().pins.clear();
+                }
                 drop(fig);
                 self.graph.redraw();
             }
         }
     }
     fn history_card(self: &Rc<Self>, saved: &calc::Saved) {
-        let body = column(4);
-        body.add_css_class("simple-card");
-        body.append(&label(&saved.input));
+        let body = column(0);
+        let input = label(&saved.input);
+        input.add_css_class("dim-label");
+        body.append(&input);
+        let answer = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         let result = label(&saved.result);
         result.add_css_class("simple-result");
-        body.append(&result);
+        answer.append(&result);
         if !saved.approx.is_empty() {
-            body.append(&label(&format!("≈ {}", saved.approx)));
+            let approx = label(&format!("≈ {}", saved.approx));
+            approx.add_css_class("dim-label");
+            approx.set_valign(gtk::Align::Center);
+            answer.append(&approx);
         }
-        let button = gtk::Button::builder().child(&body).has_frame(false).build();
+        body.append(&answer);
+        let button = gtk::Button::builder().child(&body).has_frame(false).css_classes(["simple-card"]).tooltip_text("Tap to use again").build();
         let (weak, text) = (Rc::downgrade(self), saved.expr.clone());
         button.connect_clicked(move |_| {
             if let Some(s) = weak.upgrade() {
@@ -964,33 +886,46 @@ impl Simple {
         let (fig, stats, skipped) = model::data_chart(&grid, chart, x, self.ycol.selected() as usize);
         *self.data_board.figure.borrow_mut() = fig;
         self.data_board.redraw();
-        let fmt = |v: Option<f64>| v.filter(|v| v.is_finite()).map(plot::cursor::num).unwrap_or_else(|| "—".into());
-        let regression = if chart == model::Chart::Histogram {
-            "— (requires an X/Y chart)".into()
-        } else {
-            match model::linear_regression(&grid, x, self.ycol.selected() as usize) {
-                Ok((m, b)) => format!("y = {}x {} {}", fmt(Some(m)), if b < 0.0 { "−" } else { "+" }, fmt(Some(b.abs()))),
-                Err(reason) => format!("— ({reason})"),
-            }
-        };
-        self.stats.set_text(&format!(
-            "Count: {}    Mean: {}    Median: {}\nMin: {}    Max: {}    Sample standard deviation: {}    Regression: {}\n{} missing or invalid values · {} rows skipped in chart",
-            stats.count,
-            fmt(stats.mean),
-            fmt(stats.median),
-            fmt(stats.min),
-            fmt(stats.max),
-            fmt(stats.std),
-            regression,
-            stats.skipped,
-            skipped
-        ));
+        let fmt = |v: Option<f64>| v.filter(|v| v.is_finite()).map(plot::cursor::num);
+        let mut lines = vec![];
+        let figures: Vec<String> = [("n", Some(stats.count as f64)), ("mean", stats.mean), ("median", stats.median), ("sd", stats.std), ("min", stats.min), ("max", stats.max)]
+            .into_iter()
+            .filter_map(|(name, v)| Some(format!("{name} = {}", fmt(v)?)))
+            .collect();
+        if stats.count > 0 {
+            lines.push(figures.join("   "));
+        }
+        if chart != model::Chart::Histogram
+            && let Ok((m, b)) = model::linear_regression(&grid, x, self.ycol.selected() as usize)
+        {
+            lines.push(format!("Best-fit line: y = {}x {} {}", fmt(Some(m)).unwrap_or_default(), if b < 0.0 { "−" } else { "+" }, fmt(Some(b.abs())).unwrap_or_default()));
+        }
+        let skipped = skipped.max(stats.skipped);
+        if skipped > 0 {
+            lines.push(format!("{skipped} row{} skipped: not a number", if skipped == 1 { "" } else { "s" }));
+        }
+        self.stats.set_text(&lines.join("\n"));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_keypad_template_calculates() {
+        let o = qalc::Options { angle: "deg".into(), ..Default::default() };
+        for (page, _, keys) in PAGES {
+            assert_eq!(keys.len(), 20, "{page}: a full 5 x 4 page");
+            for (face, t) in keys.iter().filter(|(_, t)| t.contains(keypad::SLOT)) {
+                // some functions want integers, inverse trig wants |a| <= 1
+                let ok = ["2", "1/2"].iter().any(|v| qalc::classroom_eval(&t.replace(keypad::SLOT, v), &o).is_ok());
+                assert!(ok, "{page} key {face}: {t}");
+            }
+        }
+        let cells: usize = NUMBERS.iter().map(|(_, a)| if *a == "@enter" { 2 } else { 1 }).sum();
+        assert_eq!(cells, 24, "a full 6 x 4 number pad");
+    }
 
     fn pump_until(mut ready: impl FnMut() -> bool) {
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
@@ -1050,7 +985,8 @@ mod tests {
         assert!(gtk::IconTheme::for_display(&WidgetExt::display(&ui.win)).has_icon("qcalcp"), "embedded application icon is missing");
         let s = ui.simple.borrow().as_ref().unwrap().clone();
         assert!(ui.simple_mode.get());
-        assert_eq!(ui.win.title().as_deref(), Some("EduCalc — Simple"));
+        assert_eq!(ui.win.title().as_deref(), Some("EduCalc"));
+        assert!(gtk::Settings::default().unwrap().is_gtk_application_prefer_dark_theme(), "Simple must follow the dark theme setting");
         assert_eq!(glib::application_name().as_deref(), Some("EduCalculator"));
         assert_eq!(s.tab.get(), SimpleTab::Calculator);
         assert_eq!(s.options.borrow().angle, "deg");
@@ -1061,8 +997,7 @@ mod tests {
         ui.win.set_size_request(width, height);
         ui.win.set_default_size(width, height);
         settle();
-        assert_eq!(s.calculator_controls.prev_sibling(), Some(s.keypad_toggle.clone().upcast()));
-        assert!(s.entry.next_sibling().is_none(), "the input must sit at the bottom of the calculator workspace");
+        assert!(s.entry.parent().unwrap().next_sibling().is_none(), "the input must sit at the bottom of the calculator workspace");
         assert!(!s.entry.vexpands(), "moving the input must not stretch its height");
         s.entry.set_text("3/4 + 1/2");
         s.press("@enter");
@@ -1092,10 +1027,12 @@ mod tests {
 
         s.select(SimpleTab::Graph);
         settle();
-        assert!(!s.pad_bar.is_visible());
-        for button in [s.angle.upcast_ref::<gtk::Widget>(), s.more.upcast_ref(), s.keypad_toggle.upcast_ref()] {
-            assert_eq!(button.parent(), Some(s.graph.tools.clone().upcast()));
-        }
+        assert!(s.side_keys.is_visible() && s.function_keys.is_visible());
+        let pages: Vec<gtk::ToggleButton> = std::iter::successors(s.side_keys.first_child(), |w| w.next_sibling()).filter_map(|w| w.downcast().ok()).collect();
+        pages[2].set_active(true);
+        assert_eq!(s.function_keys.visible_child_name().as_deref(), Some("trig"));
+        assert!(!pages[0].is_active(), "one function page at a time");
+        pages[0].set_active(true);
         let graph_height = s.graph.area.height();
         let workspace_height = s.root.first_child().unwrap().height();
         s.keypad_height.set_height(160);
@@ -1132,18 +1069,14 @@ mod tests {
 
         s.select(SimpleTab::Data);
         settle();
-        assert!(!s.pad_bar.is_visible());
-        assert_eq!(s.keypad_toggle.parent(), Some(s.data_board.tools.clone().upcast()));
+        assert!(!s.side_keys.is_visible() && !s.function_keys.is_visible(), "the table takes only the number pad");
         let chart_height = s.data_board.area.height();
         s.toggle_keypad();
         settle();
         assert!(s.data_board.area.height() > chart_height);
-        assert_eq!(s.keypad_toggle.label().as_deref(), Some("Show keypad"));
         s.toggle_keypad();
         s.select(SimpleTab::Calculator);
-        assert!(s.pad_bar.is_visible());
-        assert_eq!(s.keypad_toggle.parent(), Some(s.pad_bar.clone().upcast()));
-        assert_eq!(s.calculator_controls.prev_sibling(), Some(s.keypad_toggle.clone().upcast()));
+        assert!(s.function_keys.is_visible());
         s.select(SimpleTab::Data);
         settle();
         s.press("−");
@@ -1163,9 +1096,9 @@ mod tests {
         for i in 0..4 {
             s.chart.set_selected(i);
             settle();
-            assert!(s.stats.text().contains("Mean: 2"), "{}", s.stats.text());
-            assert!(s.stats.text().contains("standard deviation: 1"));
-            assert!(s.stats.text().contains(if i == 3 { "Regression: — (requires an X/Y chart)" } else { "Regression: y = 1x + 0" }), "{}", s.stats.text());
+            assert!(s.stats.text().contains("mean = 2"), "{}", s.stats.text());
+            assert!(s.stats.text().contains("sd = 1"));
+            assert_eq!(s.stats.text().contains("Best-fit line: y = 1x + 0"), i != 3, "{}", s.stats.text());
             if i == 0 {
                 screenshot(&ui, "simple-data-regression-1366");
             }
@@ -1174,18 +1107,35 @@ mod tests {
         assert!(s.data_board.figure.borrow().axes[0].origin_axes);
         s.data.root.activate_action("ed.del-row", None).unwrap();
         settle();
-        assert!(s.stats.text().contains("Mean: 1.5"));
+        assert!(s.stats.text().contains("mean = 1.5"));
+        // one table on both sides: Advanced gets it as `data` plus X, and Octave's changes come back
+        super::super::show_simple(&ui, false);
+        settle();
+        let data = |ui: &Ui| match ui.interp.borrow().vars.get("data") {
+            Some(crate::value::Value::Num(m)) => m.data.clone(),
+            _ => vec![],
+        };
+        assert_eq!(data(&ui), [1.0, 2.0]);
+        assert!(ui.interp.borrow().vars.contains_key("X") && !ui.interp.borrow().vars.contains_key("Y"));
+        super::super::eval_octave(&ui, "data = [4 5; 6 7];").unwrap();
+        super::super::show_simple(&ui, true);
+        settle();
+        let grid = s.data.grid();
+        assert_eq!((&grid[0][..2], &grid[1][..2], &grid[2][..2]), (&["X", "Y"].map(String::from)[..], &["4", "5"].map(String::from)[..], &["6", "7"].map(String::from)[..]));
+        assert!(s.stats.text().contains("n = 2"), "{}", s.stats.text());
         s.data.root.activate_action("ed.del-col", None).unwrap();
         settle();
         assert_eq!(s.data.grid()[0].len(), 1);
         let table = s.data.grid();
         super::super::show_simple(&ui, false);
         settle();
-        assert!(ui.win.title().unwrap().ends_with(" — EduCalc"));
+        assert!(ui.win.title().unwrap().ends_with(" - EduCalc"));
+        super::super::set_dark(&ui, false);
         assert_eq!(qalc::options(), advanced_options);
         assert_eq!(ui.cfg.borrow().calc_mode, advanced_mode);
         super::super::show_simple(&ui, true);
         settle();
+        screenshot(&ui, "simple-data-light");
         assert_eq!(s.data.grid(), table);
         assert_eq!(s.graph_rows.borrow().len(), 2);
         s.toggle_keypad();

@@ -693,7 +693,8 @@ pub fn classroom_curve(expr: &str, opts: &Options, lo: f64, hi: f64) -> Result<(
         if answer.free_vars.iter().any(|v| v != "x") {
             return Err("Use a function of x, for example y = 2x + 1.".into());
         }
-        let xs = linspace(lo, hi, 1001);
+        // the Simple graph asks for twice the view: 1000 samples across what's shown
+        let xs = linspace(lo, hi, 2001);
         let ys = raw_sample(expr, "x", "", &xs, &xs)?;
         Ok(crate::plot::builtins::break_jumps(&xs, &ys))
     })();

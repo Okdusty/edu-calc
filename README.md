@@ -11,34 +11,38 @@ A calculator, Octave-style interpreter and plotter in one program, with a GTK 4 
 
 ### What it does
 
-**Simple mode** opens by default for classroom smartboards. It has three large tabs and a
-four-row keypad fixed along the bottom; **More functions** opens a second page, and **Hide
-keypad** makes more room. The interface starts light, in degrees, with decimal number bases.
-The **DEG/RAD** button changes the angle unit for both calculations and function graphs.
-Drag the **resize keypad** strip up or down to change its height in Simple mode.
-Advanced uses the standard keypad layout without a resize strip.
-Dragging it down gives the graph or data area more room; double-click the strip to reset.
-The focused strip also supports Up/Down and Home. Simple keypads include `x`, `y` and `=`.
+**Simple mode** opens by default for classroom smartboards. The header holds the
+Calculator, Graph and Data tabs, an **Advanced** button, a keypad button (F9) and the menu.
+It follows the GTK light or dark theme, like Advanced. The keypad's side column picks a page
+of function keys: **Basic** (powers, roots, fractions, sin/cos/tan, ln, log, n!), **f(x)**
+(cube and n-th roots, eˣ, 10ˣ, log base a, nCr, nPr, gcd, lcm, mod, round, floor, ceil) or
+**Trig** (inverse, reciprocal and hyperbolic functions, degrees). Angles start in degrees;
+**DEG/RAD** changes the unit for calculations and graphs. The number pad also holds the
+cursor keys, **Ans** and **Next □**. Drag the bar above the keypad to change its height;
+double-click it to reset. The focused bar also takes Up/Down and Home.
 
 - **Calculator:** arithmetic, fractions, powers, roots and trigonometry, a live answer preview,
-  and tap-to-reuse history. **Decimal result** changes the answer format. **Graph this** sends
-  a function of `x` to the Graph tab. Use **Next □** to move through a function key's arguments.
-- **Graph:** enter several functions such as `y = x²`, `2x + 1`, or `sin(x)`. Each row has its
-  own color and Show/Delete controls. Curves update after typing; drag to pan, pinch or use
-  Zoom to zoom, and tap a curve for coordinates. **Points** shows the existing key-point
-  annotations. This view supports explicit functions of `x`, not implicit equations,
+  and history you can tap to reuse. **Decimal** switches answers from fractions to decimals.
+  **Graph** sends a function of `x` to the Graph tab. **Next □** moves through a function
+  key's arguments.
+- **Graph:** one row per function, such as `y = x²`, `2x + 1` or `sin(x)`, with a checkbox to
+  show or hide it and a delete button. Curves update while you type. Drag to pan (a flick keeps
+  it gliding), pinch to zoom about your fingers, scroll to zoom about the pointer, or use the
+  zoom buttons in the graph's corner; tap a curve for coordinates. Rendering runs in the
+  background, so the view follows your fingers at full frame rate. The pin button marks key
+  points. Only explicit functions of `x` are supported: no implicit equations,
   inequalities, sliders or 3-D graphs.
-- **Data:** enter or paste a numeric table, or import CSV/TSV/text/XLSX/XLS/ODS. Pick Scatter,
-  Line, Bar or Histogram and the columns to use. A histogram uses the selected Y/values
-  column; other charts can use row numbers instead of X. Statistics show the selected
-  column's count, mean, median, minimum, maximum and sample standard deviation (undefined
-  with fewer than two values). Beside standard deviation, **Regression** shows the least-squares
-  line `y = mx + b` for the selected X/Y columns (or row numbers as X), using complete numeric
-  pairs. It requires at least two pairs with distinct X values and is unavailable for histograms.
-  Missing, invalid and nonfinite cells are excluded and counted;
-  line charts keep gaps. Decimal commas are accepted in cells. Export tables to CSV/TSV and
-  charts through **Menu → Export chart** to PNG/SVG.
-  Compact table controls include **Delete Row** and **Delete Column**, acting on the selected cell.
+- **Data:** type or paste a numeric table, or import CSV/TSV/text/XLSX/XLS/ODS. The table's
+  toolbar has import, export (CSV/TSV), paste, and a ⋮ menu that inserts and deletes rows and
+  columns at the selected cell. Pick Scatter, Line, Bar or Histogram and the x and y columns
+  (x can be the row number). Below the chart: n, mean, median, sample standard deviation, min
+  and max of the y column, and for X/Y charts the least-squares line `y = mx + b` over complete
+  numeric pairs (at least two, with distinct x). Missing and non-numeric cells are skipped and
+  counted; line charts keep gaps. Decimal commas are accepted. The keypad shows only the number
+  pad here. **Menu → Export chart** saves the chart as PNG or SVG. The table is shared with
+  Advanced: switching to Advanced puts it in the workspace as `data` (each named column also
+  as its own variable, such as `X` and `Y`), and when Octave changes `data`, the table shows
+  the new values on your way back. Advanced's Data Editor opens on `data` too.
 
 Tabs and mode switches keep your current work. **Advanced** opens the original calculator,
 Octave editor and tools; **Simple** returns to the classroom view. Advanced preferences are

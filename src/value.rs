@@ -113,7 +113,7 @@ impl CMatrix {
 pub enum Func {
     /// `@sin`, or a user/builtin/addon function referenced by name.
     Named(String),
-    /// `@(x) ...` — body owned by the language module.
+    /// `@(x) ...`: body owned by the language module.
     Anon(crate::lang::Lambda),
 }
 
