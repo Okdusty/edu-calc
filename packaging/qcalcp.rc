@@ -15,8 +15,8 @@ BEGIN
         BEGIN
             VALUE "FileDescription", "EduCalculator\0"
             VALUE "ProductName", "EduCalculator\0"
-            VALUE "FileVersion", "0.1.0-beta.2\0"
-            VALUE "ProductVersion", "0.1.0-beta.2\0"
+            VALUE "FileVersion", "0.1.0-beta.3\0"
+            VALUE "ProductVersion", "0.1.0-beta.3\0"
             VALUE "OriginalFilename", "EduCalc.exe\0"
         END
     END

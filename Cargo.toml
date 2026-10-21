@@ -1,6 +1,6 @@
 [package]
 name = "qcalcp"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.3"
 edition = "2024"
 description = "Calculator, Octave-style interpreter and plotter: GTK 4, terminal UI and command line"
 license = "GPL-2.0-or-later" # links libqalculate (GPL-2.0-or-later)
