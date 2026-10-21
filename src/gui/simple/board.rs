@@ -22,6 +22,19 @@ impl Detached {
     }
 }
 
+/// Text and line scale for a w x h board: 1 up to about 1000 x 600 px, growing with the board
+/// (a smartboard's graph is read from across the room) up to 1.6.
+fn grow(w: i32, h: i32) -> f64 {
+    (w as f64 / 1000.0).min(h as f64 / 600.0).clamp(1.0, 1.6)
+}
+
+/// The plot area of `f` (rendered at `old` widget size) once the widget is `new`: the margins
+/// (tick labels) keep their size, the plot area takes the change.
+fn resized_rect(f: &render::Frame, old: (i32, i32), new: (i32, i32)) -> [f64; 4] {
+    let [x0, y0, x1, y1] = f.rect;
+    [x0, y0, x1 + (new.0 - old.0) as f64, y1 + (new.1 - old.1) as f64]
+}
+
 /// widget size, scale factor, dark theme, figure version
 type Key = (i32, i32, i32, bool, u64);
 pub struct Board {
@@ -279,7 +292,8 @@ impl Board {
     }
 
     /// Render `key` on a worker thread; when it lands, draw again (which renders again if the view moved on).
-    fn render(self: &Rc<Self>, key: Key, theme: Theme) {
+    fn render(self: &Rc<Self>, key: Key, mut theme: Theme) {
+        theme.font_size = (theme.font_size as f64 * grow(key.0, key.1)).round() as u32;
         self.wanted.set(Some(key));
         self.rendering.set(true);
         let fig = Detached::new(&self.figure.borrow());
@@ -303,33 +317,50 @@ impl Board {
         });
     }
 
-    /// The last image, stretched to the widget, its plot area moved and scaled to the figure's current limits.
+    /// The last image with its plot area moved and scaled to what the figure shows now, in the plot
+    /// area the widget's current size will get. Axis-equal graphs scale evenly, so a resize or a
+    /// gesture never squashes the curves or the text.
     fn paint(&self, cr: &cairo::Context, w: i32, h: i32, theme: &Theme) {
         let shot = self.shot.borrow();
         let Some(((sw, sh, ..), image)) = &*shot else { return };
+        let fig = self.figure.borrow();
+        let frames = self.frames.borrow();
+        let (Some(f), Some(a)) = (frames.first(), fig.axes.first()) else {
+            // nothing to line up: stretch the whole image
+            let _ = cr.save();
+            cr.scale(w as f64 / *sw as f64, h as f64 / *sh as f64);
+            let _ = cr.set_source_surface(image, 0.0, 0.0);
+            let _ = cr.paint();
+            let _ = cr.restore();
+            return;
+        };
+        let [x0, y0, x1, y1] = f.rect;
+        let rect = resized_rect(f, (*sw, *sh), (w, h));
+        let ((ox, oy), (nx, ny)) = ((f.bounds[0], f.bounds[1]), canvas::shown(a, f, rect));
+        let resized = (w, h) != (*sw, *sh);
+        let bg = theme.bg.map(|v| v as f64 / 255.0);
         let _ = cr.save();
-        cr.scale(w as f64 / *sw as f64, h as f64 / *sh as f64);
+        if resized {
+            cr.set_source_rgb(bg[0], bg[1], bg[2]);
+            let _ = cr.paint();
+        }
         let _ = cr.set_source_surface(image, 0.0, 0.0);
         let _ = cr.paint();
-        let fig = self.figure.borrow();
-        if let (Some(f), Some(a)) = (self.frames.borrow().first(), fig.axes.first()) {
-            let ([x0, y0, x1, y1], ox, oy) = (f.rect, f.bounds[0], f.bounds[1]);
-            let (nx, ny) = (a.xlim.unwrap_or(ox), a.ylim.unwrap_or(oy));
-            // ponytail: linear axes only, the classroom charts have no log scales
-            if (nx, ny) != (ox, oy) && nx.1 != nx.0 && ny.1 != ny.0 {
-                let (sx, sy) = ((ox.1 - ox.0) / (nx.1 - nx.0), (oy.1 - oy.0) / (ny.1 - ny.0));
-                cr.rectangle(x0, y0, x1 - x0, y1 - y0);
-                cr.clip();
-                let [r, g, bl] = theme.bg.map(|v| v as f64 / 255.0);
-                cr.set_source_rgb(r, g, bl);
-                let _ = cr.paint();
-                cr.translate(x0 + (ox.0 - nx.0) / (nx.1 - nx.0) * (x1 - x0), y0 + (ny.1 - oy.1) / (ny.1 - ny.0) * (y1 - y0));
-                cr.scale(sx, sy);
-                cr.translate(-x0, -y0);
-                let _ = cr.set_source_surface(image, 0.0, 0.0);
-                cr.source().set_filter(cairo::Filter::Bilinear);
-                let _ = cr.paint();
-            }
+        let (ow, oh, nw, nh) = (x1 - x0, y1 - y0, rect[2] - rect[0], rect[3] - rect[1]);
+        // ponytail: linear axes only, the classroom charts have no log scales
+        if (resized || (nx, ny) != (ox, oy)) && nx.1 != nx.0 && ny.1 != ny.0 && nw > 1.0 && nh > 1.0 {
+            // old plot pixel -> data -> new plot pixel
+            let (sx, sy) = ((ox.1 - ox.0) / ow * nw / (nx.1 - nx.0), (oy.1 - oy.0) / oh * nh / (ny.1 - ny.0));
+            cr.rectangle(rect[0], rect[1], nw, nh);
+            cr.clip();
+            cr.set_source_rgb(bg[0], bg[1], bg[2]);
+            let _ = cr.paint();
+            cr.translate(rect[0] + (ox.0 - nx.0) / (nx.1 - nx.0) * nw, rect[1] + (ny.1 - oy.1) / (ny.1 - ny.0) * nh);
+            cr.scale(sx, sy);
+            cr.translate(-x0, -y0);
+            let _ = cr.set_source_surface(image, 0.0, 0.0);
+            cr.source().set_filter(cairo::Filter::Bilinear);
+            let _ = cr.paint();
         }
         let _ = cr.restore();
     }
@@ -343,8 +374,14 @@ impl Board {
     }
     /// The x range in view (graphs sample around it).
     pub fn range(&self) -> (f64, f64) {
-        let x = self.figure.borrow().axes.first().and_then(|a| a.xlim);
-        x.or_else(|| self.frames.borrow().first().map(|f| f.bounds[0])).unwrap_or((-10.0, 10.0))
+        let fig = self.figure.borrow();
+        let (a, f) = (fig.axes.first(), self.frames.borrow().first().cloned());
+        let size = self.shot.borrow().as_ref().map(|((w, h, ..), _)| (*w, *h));
+        match (a, f, size) {
+            // at the widget's size now: a resize lands before its render
+            (Some(a), Some(f), Some(old)) => canvas::shown(a, &f, resized_rect(&f, old, (self.area.width(), self.area.height()))).0,
+            (a, ..) => a.and_then(|a| a.xlim).unwrap_or((-10.0, 10.0)),
+        }
     }
     /// Pan by pixel delta `d`, then zoom by `factor` about pixel `at`.
     fn change(&self, d: (f64, f64), factor: f64, at: (f64, f64)) {

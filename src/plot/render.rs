@@ -43,6 +43,20 @@ impl Frame {
     }
 }
 
+/// Axis equal in a w x h px plot area: the range with more pixels per unit widens about its
+/// center until both have the same scale. The GUI boards predict a render's ranges with it.
+pub fn equal_ranges(bx: (f64, f64), by: (f64, f64), w: f64, h: f64) -> ((f64, f64), (f64, f64)) {
+    let (kx, ky) = (w / (bx.1 - bx.0).abs(), h / (by.1 - by.0).abs());
+    if !(kx.is_finite() && ky.is_finite() && kx > 0.0 && ky > 0.0) {
+        return (bx, by);
+    }
+    let widen = |r: (f64, f64), span: f64| {
+        let (c, h) = ((r.0 + r.1) / 2.0, span.copysign(r.1 - r.0) / 2.0);
+        (c - h, c + h)
+    };
+    if kx > ky { (widen(bx, w / ky), by) } else { (bx, widen(by, h / kx)) }
+}
+
 /// RGB8 pixels, row-major, len = w * h * 3.
 pub fn render_rgb(fig: &Figure, theme: &Theme, w: u32, h: u32) -> Result<Vec<u8>, String> {
     render_frames(fig, theme, w, h).map(|(px, _)| px)
@@ -401,16 +415,7 @@ where
         if a.equal && !(a.logx || a.logy) && plot.w() > 0.0 && plot.h() > 0.0 {
             // axis equal: widen the range with room to spare, then lay out again for its ticks
             // ponytail: the second layout may shift the box by a tick label's width, a few px off square
-            let (kx, ky) = (plot.w() / (bx.1 - bx.0).abs(), plot.h() / (by.1 - by.0).abs());
-            let widen = |r: (f64, f64), span: f64| {
-                let (c, h) = ((r.0 + r.1) / 2.0, span.copysign(r.1 - r.0) / 2.0);
-                (c - h, c + h)
-            };
-            if kx > ky {
-                bx = widen(bx, plot.w() / ky);
-            } else {
-                by = widen(by, plot.h() / kx);
-            }
+            (bx, by) = equal_ranges(bx, by, plot.w(), plot.h());
             (plot, xt, yt) = layout(bx, by);
         }
         if plot.w() < 4.0 || plot.h() < 4.0 {

@@ -599,7 +599,10 @@ pub(super) struct Pixels {
 
 pub(super) fn pixels(fig: &Figure, theme: &Theme, w: i32, h: i32, scale: f64) -> Result<Pixels, String> {
     let (pw, ph) = (((w as f64 * scale).round() as i32).max(1), ((h as f64 * scale).round() as i32).max(1));
-    let (rgb, frames) = crate::plot::render::render_frames(fig, theme, pw as u32, ph as u32)?;
+    // the renderer sizes text (and with it lines and markers) in buffer pixels: on a 2x display a
+    // 14 px font would come out 7 px, so it gets the device scale
+    let theme = Theme { font_size: (theme.font_size as f64 * scale).round() as u32, ..theme.clone() };
+    let (rgb, frames) = crate::plot::render::render_frames(fig, &theme, pw as u32, ph as u32)?;
     let stride = cairo::Format::ARgb32.stride_for_width(pw as u32).map_err(|e| e.to_string())?;
     let data = argb(&rgb, pw as usize, ph as usize, stride as usize).ok_or("renderer returned a short buffer")?;
     let k = pw as f64 / w.max(1) as f64;
@@ -709,10 +712,20 @@ pub fn pan_zoom(fig: &mut Figure, f: &Frame, d: (f64, f64), factor: f64, p: (f64
     let Some(a) = fig.axes.get_mut(f.axes) else { return };
     let [x0, y0, x1, y1] = f.rect;
     let (w, h) = (x1 - x0, y1 - y0);
-    // limits already set win over the frame's: several drag updates can land before the next render
-    let (xr, yr) = (a.xlim.unwrap_or(f.bounds[0]), a.ylim.unwrap_or(f.bounds[1]));
+    let (xr, yr) = shown(a, f, f.rect);
     a.xlim = Some(adjust(xr, -d.0 / w, factor, (p.0 - x0) / w, a.logx));
     a.ylim = Some(adjust(yr, d.1 / h, factor, 1.0 - (p.1 - y0) / h, a.logy));
+}
+
+/// The x and y ranges `a` shows in plot area `rect` (px): its limits, else the frame's (limits win:
+/// several drag updates can land before the next render), widened like the renderer's axis equal.
+pub fn shown(a: &Axes, f: &Frame, rect: [f64; 4]) -> ((f64, f64), (f64, f64)) {
+    let (xr, yr) = (a.xlim.unwrap_or(f.bounds[0]), a.ylim.unwrap_or(f.bounds[1]));
+    if a.equal && !(a.logx || a.logy) && !a.is_3d() {
+        crate::plot::render::equal_ranges(xr, yr, rect[2] - rect[0], rect[3] - rect[1])
+    } else {
+        (xr, yr)
+    }
 }
 
 /// Shift range `r` by `shift` spans, then scale it by `factor` about `anchor` (fraction of the span
@@ -782,6 +795,28 @@ mod tests {
         pan_zoom(&mut f, &fr, (0., 0.), 0.5, ((x0 + x1) / 2.0, (y0 + y1) / 2.0));
         assert!(close(f.axes[0].xlim.unwrap(), (1.5, 6.5)));
         assert!(close(f.axes[0].ylim.unwrap(), (3.5, 8.5)));
+    }
+
+    #[test]
+    fn shown_matches_axis_equal_render() {
+        // the Simple graph's axes; any window shape widens one of its limits
+        let mut fig = Figure::new(1);
+        let a = fig.axes();
+        (a.equal, a.origin_axes, a.grid) = (true, true, true);
+        (a.xlim, a.ylim) = (Some((-10., 10.)), Some((-6., 6.)));
+        for (w, h, scale) in [(520, 640, 2.0), (1085, 610, 1.0), (300, 900, 1.0), (1600, 300, 2.0)] {
+            let p = pixels(&fig, &Theme::dark(), w, h, scale).unwrap();
+            let f = &p.frames[0];
+            let (x, y) = shown(&fig.axes[0], f, f.rect);
+            let [(bx0, bx1), (by0, by1)] = [f.bounds[0], f.bounds[1]];
+            // the renderer's second layout may move the plot area by a tick label's width
+            let near = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs().max((a.1 - b.1).abs()) < 0.03 * (b.1 - b.0);
+            assert!(near(x, (bx0, bx1)) && near(y, (by0, by1)), "{w}x{h}: shown {x:?} {y:?}, drawn {:?}", &f.bounds[..2]);
+            // and the drawn ranges keep one scale on both axes
+            let [x0, y0, x1, y1] = f.rect;
+            let (kx, ky) = ((x1 - x0) / (bx1 - bx0), (y1 - y0) / (by1 - by0));
+            assert!((kx / ky - 1.0).abs() < 0.03, "{w}x{h}: {kx} vs {ky} px per unit");
+        }
     }
 
     /// Visual QA without a window: `cargo test overlay_sample -- --ignored`, then look at samples/.
