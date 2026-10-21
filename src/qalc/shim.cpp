@@ -496,7 +496,7 @@ static string visual(const MathStructure &p, const MathStructure &m, const MathS
 extern "C" void qs_free(char *s) { free(s); }
 
 // Fields (US-separated): error, input, result, approx, alts (RS between, GS label|text), value,
-// octave, free vars (RS), messages (RS), assigned name, visual. Failure = just the error text
+// octave, free vars (RS), messages (RS), assigned name, visual, units ("1" when the result has any). Failure = just the error text
 // (RS-separated). msecs bounds the whole call. mode: 0 plain, 1 sets ans, 2 preview (no side
 // effects at all: anything that would assign, plot, export or run a command is refused).
 extern "C" char *qs_calc(const char *expr, int msecs, int mode) {
@@ -683,7 +683,7 @@ extern "C" char *qs_calc(const char *expr, int msecs, int mode) {
         string more = messages(nullptr);
         if (!more.empty()) msgs += (msgs.empty() ? "" : string(1, RS)) + more;
         string r;
-        for (const string &f : {string(), input, result, approx, alts, val, oct, fvs, msgs, assigned, vis}) r += f + US;
+        for (const string &f : {string(), input, result, approx, alts, val, oct, fvs, msgs, assigned, vis, string(units ? "1" : "")}) r += f + US;
         r.pop_back();
         return dup(r);
     } catch (const std::exception &x) {

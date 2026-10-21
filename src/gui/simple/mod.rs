@@ -1,5 +1,6 @@
 //! Touch-first classroom shell. Advanced widgets and preferences remain intact.
 mod board;
+mod catalog;
 mod model;
 mod worker;
 
@@ -27,6 +28,10 @@ pub const CSS: &str = "
 .simple-card { padding: 6px 10px; border-radius: 8px; background: alpha(currentColor, 0.05); }
 .simple-keypad button { min-height: 30px; }
 .simple-side button { padding-left: 8px; padding-right: 8px; }
+.simple-catalog row { padding: 6px 8px; }
+.simple-catalog .catalog-topic { font-weight: bold; margin-top: 8px; }
+.simple-catalog .catalog-name { font-weight: bold; font-size: 1.1em; }
+.simple-catalog .catalog-example { font-family: monospace; opacity: 0.75; }
 ";
 
 /// Function pages (5 x 4) behind the side column's page buttons: (name, button, keys); □ marks a slot.
@@ -110,6 +115,8 @@ pub struct Simple {
     column_names: RefCell<Vec<String>>,
     stats: gtk::Label,
     selectors_busy: Cell<bool>,
+    /// header's Functions catalog (not on the Data tab)
+    functions: gtk::MenuButton,
     keypad: gtk::Box,
     keypad_height: Rc<super::resize::KeypadHeight>,
     side_keys: gtk::Box,
@@ -174,11 +181,14 @@ impl Simple {
         let menu = gio::Menu::new();
         menu.append(Some("Fullscreen"), Some("app.fullscreen"));
         menu.append(Some("Export chart…"), Some("app.simple-export"));
+        menu.append_submenu(Some("Appearance"), &super::appearance_menu());
         let menu_button = gtk::MenuButton::builder().icon_name("open-menu-symbolic").menu_model(&menu).tooltip_text("Menu").has_frame(false).build();
         header.pack_end(&menu_button);
         let keypad_toggle =
             gtk::Button::builder().icon_name("input-keyboard-symbolic").tooltip_text("Show or hide the keypad (F9)").has_frame(false).focus_on_click(false).build();
         header.pack_end(&keypad_toggle);
+        let functions = gtk::MenuButton::builder().label("Functions").tooltip_text("Functions and how to write them; tap one to insert it").focus_on_click(false).build();
+        header.pack_end(&functions);
 
         let work = column(6);
         work.set_margin_top(6);
@@ -320,6 +330,7 @@ impl Simple {
             column_names: RefCell::new(vec!["X".into(), "Y".into()]),
             stats,
             selectors_busy: Cell::new(false),
+            functions,
             keypad,
             keypad_height,
             side_keys,
@@ -334,6 +345,12 @@ impl Simple {
             data_pending: RefCell::new(None),
         });
         s.build_keypad();
+        let weak = Rc::downgrade(&s);
+        s.functions.set_popover(Some(&catalog::popover(move |t| {
+            if let Some(s) = weak.upgrade() {
+                s.press(t);
+            }
+        })));
         let weak = Rc::downgrade(&s);
         s.stack.connect_visible_child_name_notify(move |_| {
             if let Some(s) = weak.upgrade() {
@@ -500,6 +517,7 @@ impl Simple {
         // the table takes numbers only: no function keys, and a number pad that doesn't span the window
         let data = self.tab.get() == SimpleTab::Data;
         self.side_keys.set_visible(!data);
+        self.functions.set_sensitive(!data);
         self.function_keys.set_visible(!data);
         if let Some(numbers) = &*self.numbers.borrow() {
             numbers.set_halign(if data { gtk::Align::Center } else { gtk::Align::Fill });
@@ -515,6 +533,11 @@ impl Simple {
         } else {
             self.graph.export(&ui.win);
         }
+    }
+    /// The boards draw in the Advanced plot theme, which follows the appearance.
+    pub fn theme_changed(&self) {
+        self.graph.redraw();
+        self.data_board.redraw();
     }
     pub fn reset_view(&self) {
         if self.tab.get() == SimpleTab::Data {
@@ -976,7 +999,7 @@ mod tests {
         cfg.height = height;
         cfg.maximized = false;
         cfg.calc_mode = false;
-        cfg.dark = true;
+        cfg.appearance = "dark";
         cfg.save_state(&path).unwrap();
         let app = gtk::Application::builder().application_id("com.dusty.qcalcp.classroomtest").flags(gio::ApplicationFlags::NON_UNIQUE).build();
         app.register(None::<&gio::Cancellable>).unwrap();
@@ -1021,6 +1044,18 @@ mod tests {
         s.press("@back");
         assert_eq!(s.entry.text(), "14");
         s.entry.set_text("");
+        s.functions.popup();
+        settle();
+        let pop = s.functions.popover().unwrap();
+        let image = gtk::WidgetPaintable::new(Some(&pop));
+        let snapshot = gtk::Snapshot::new();
+        image.snapshot(&snapshot, pop.width() as f64, pop.height() as f64);
+        let renderer = pop.native().unwrap().renderer().unwrap();
+        renderer.render_texture(&snapshot.to_node().unwrap(), None).save_to_png("target/simple-functions.png").unwrap();
+        s.functions.popdown();
+        s.press("log(□, □)");
+        assert_eq!(s.entry.text(), "log(□, □)");
+        s.entry.set_text("");
         screenshot(&ui, "simple-calculator-1366");
         assert!(!s.preview.is_visible());
         assert!(!s.message.is_visible());
@@ -1061,6 +1096,8 @@ mod tests {
         pump_until(|| s.graph.figure.borrow().axes[0].series.len() == 2);
         first.entry.set_text("sin(");
         pump_until(|| !first.error.text().is_empty());
+        assert_eq!(first.error.text(), "“sin(” is missing a closing “)”.");
+        screenshot(&ui, "simple-graph-error");
         assert_eq!(s.graph.figure.borrow().axes[0].series.len(), 1);
         first.entry.set_text("1/x");
         pump_until(|| first.error.text().is_empty() && s.graph.figure.borrow().axes[0].series.len() == 2);
@@ -1130,7 +1167,12 @@ mod tests {
         super::super::show_simple(&ui, false);
         settle();
         assert!(ui.win.title().unwrap().ends_with(" - EduCalc"));
-        super::super::set_dark(&ui, false);
+        app.activate_action("appearance", Some(&"light".to_variant()));
+        assert!(!ui.cfg.borrow().dark && !gtk::Settings::default().unwrap().is_gtk_application_prefer_dark_theme());
+        app.activate_action("appearance", Some(&"system".to_variant()));
+        assert_eq!(ui.cfg.borrow().appearance, "system");
+        eprintln!("system appearance dark: {}", ui.cfg.borrow().dark);
+        app.activate_action("appearance", Some(&"light".to_variant()));
         assert_eq!(qalc::options(), advanced_options);
         assert_eq!(ui.cfg.borrow().calc_mode, advanced_mode);
         super::super::show_simple(&ui, true);

@@ -35,7 +35,8 @@ pub fn start(calc: Arc<AtomicU64>, graph: Arc<AtomicU64>) -> (mpsc::Sender<Job>,
                         if id != graph.load(Ordering::Relaxed) {
                             break;
                         }
-                        let samples = super::model::expression(&text).and_then(|expr| qalc::classroom_curve(&expr, &options, range.0, range.1));
+                        let samples = super::model::expression(&text)
+                            .and_then(|expr| qalc::classroom_curve(&expr, &options, range.0, range.1).map_err(|e| super::model::explain(&expr, &e)));
                         result.push((row, samples));
                     }
                     if id != graph.load(Ordering::Relaxed) {

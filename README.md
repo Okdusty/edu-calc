@@ -12,8 +12,11 @@ A calculator, Octave-style interpreter and plotter in one program, with a GTK 4 
 ### What it does
 
 **Simple mode** opens by default for classroom smartboards. The header holds the
-Calculator, Graph and Data tabs, an **Advanced** button, a keypad button (F9) and the menu.
-It follows the GTK light or dark theme, like Advanced. The keypad's side column picks a page
+Calculator, Graph and Data tabs, an **Advanced** button, **Functions** (a searchable list of
+functions by topic, each with its syntax and an example; tap one to insert it), a keypad button
+(F9) and the menu.
+Menu → Appearance picks Light (the default), Dark or System Default (follows the desktop), for
+both modes. The keypad's side column picks a page
 of function keys: **Basic** (powers, roots, fractions, sin/cos/tan, ln, log, n!), **f(x)**
 (cube and n-th roots, eˣ, 10ˣ, log base a, nCr, nPr, gcd, lcm, mod, round, floor, ceil) or
 **Trig** (inverse, reciprocal and hyperbolic functions, degrees). Angles start in degrees;
@@ -26,7 +29,8 @@ double-click it to reset. The focused bar also takes Up/Down and Home.
   **Graph** sends a function of `x` to the Graph tab. **Next □** moves through a function
   key's arguments.
 - **Graph:** one row per function, such as `y = x²`, `2x + 1` or `sin(x)`, with a checkbox to
-  show or hide it and a delete button. Curves update while you type. Drag to pan (a flick keeps
+  show or hide it and a delete button. Curves update while you type; a row that can't be graphed
+  says why under it (a missing `)`, a dangling `+`, an unknown name ...). Drag to pan (a flick keeps
   it gliding), pinch to zoom about your fingers, scroll to zoom about the pointer, or use the
   zoom buttons in the graph's corner; tap a curve for coordinates. Rendering runs in the
   background, so the view follows your fingers at full frame rate. The pin button marks key

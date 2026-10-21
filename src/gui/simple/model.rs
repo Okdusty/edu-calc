@@ -1,6 +1,7 @@
 //! Classroom input and chart transformations, independent of GTK widgets.
 use crate::builtins::io;
 use crate::plot::{Data, Figure, LineStyle, Marker, Series};
+use crate::qalc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SimpleTab {
@@ -36,7 +37,126 @@ pub fn expression(text: &str) -> Result<String, String> {
     if text.contains(['=', '<', '>', ';', ':', '[', ']', '□']) {
         return Err("Complete a function of x. Equations, inequalities and scripts belong in Advanced.".into());
     }
+    syntax(text)?;
     Ok(text.into())
+}
+
+const BINARY: &[char] = &['*', '/', '^', '×', '÷', '·', '∙'];
+
+/// Bracket, operator, comma and decimal point mistakes, explained. qalc would quietly close
+/// brackets or drop a stray operator and graph something else.
+fn syntax(text: &str) -> Result<(), String> {
+    let op = |c: char| BINARY.contains(&c) || matches!(c, '+' | '-' | '−');
+    let cs: Vec<char> = text.chars().filter(|c| !c.is_whitespace()).collect();
+    // the function name in front of cs[i] == '('
+    let name = |i: usize| cs[..i].iter().rev().take_while(|c| c.is_alphanumeric()).collect::<Vec<_>>().into_iter().rev().collect::<String>();
+    let mut open = vec![];
+    for (i, &c) in cs.iter().enumerate() {
+        let prev = i.checked_sub(1).map(|j| cs[j]);
+        let next = cs.get(i + 1).copied();
+        match c {
+            '(' => open.push(i),
+            ')' => {
+                let Some(start) = open.pop() else {
+                    return Err("There is a “)” without a “(” before it. Remove it, or add the missing “(”.".into());
+                };
+                if start + 1 == i {
+                    let f = name(start);
+                    let example = if f.is_empty() { "(x + 1)".into() } else { format!("{f}(x)") };
+                    return Err(format!("“{f}()” has nothing inside the brackets. Put a value in, for example {example}."));
+                }
+            }
+            ',' if open.is_empty() => {
+                return Err("A comma only separates the values of a function, as in log(x, 2). For decimals use a point: 2.5".into());
+            }
+            ',' if matches!(prev, Some('(' | ',')) || matches!(next, None | Some(')' | ',')) => {
+                return Err("A value is missing next to a comma. Write one on each side, as in log(x, 2).".into());
+            }
+            _ if op(c) => {
+                match next {
+                    None => return Err(format!("“{c}” at the end needs something after it, for example x {c} 1.")),
+                    Some(n @ (')' | ',')) => return Err(format!("“{c}” right before “{n}” needs something after it.")),
+                    // x**2 is qalc's power too
+                    Some(n) if BINARY.contains(&n) && (c, n) != ('*', '*') => {
+                        return Err(format!("“{c}{n}” is two operators in a row. Remove one, or put a number between them."));
+                    }
+                    _ => {}
+                }
+                if BINARY.contains(&c) && prev != Some('*') {
+                    match prev {
+                        None => return Err(format!("“{c}” at the start needs something before it, for example 2 {c} x.")),
+                        Some(p @ ('(' | ',')) => return Err(format!("“{c}” right after “{p}” needs something before it.")),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(&start) = open.first() {
+        let from = start - name(start).chars().count();
+        let rest: String = cs[from..].iter().collect();
+        let n = open.len();
+        let what = if n == 1 { "a closing “)”".to_string() } else { format!("{n} closing “)”") };
+        return Err(format!("“{rest}” is missing {what}."));
+    }
+    let number = cs.split(|c| !(c.is_ascii_digit() || *c == '.')).find(|run| run.iter().filter(|c| **c == '.').count() > 1);
+    if let Some(run) = number {
+        return Err(format!("“{}” has more than one decimal point.", run.iter().collect::<String>()));
+    }
+    Ok(())
+}
+
+/// A qalc error for the Simple graph, in a student's words.
+pub fn explain(text: &str, err: &str) -> String {
+    if err == qalc::UNITS_ERROR {
+        return match unknown_word(text) {
+            Some(w) => format!("EduCalc doesn't know “{w}”. Use x as the variable, with functions such as sin, sqrt or ln."),
+            None => err.into(),
+        };
+    }
+    let quoted = || err.split('"').nth(1).filter(|q| !q.is_empty());
+    if err.starts_with("Misplaced operator") {
+        let op = quoted().unwrap_or("an operator");
+        return format!("“{op}” is in a place where it doesn't fit. Check what comes before and after it.");
+    }
+    if err.contains("is not a valid variable/function/unit") {
+        return format!("EduCalc doesn't understand “{}” in a function.", quoted().unwrap_or(err));
+    }
+    if let Some(f) = err.starts_with("You need at least").then(|| err.split("in function ").nth(1)).flatten() {
+        let f = f.trim_end_matches('.').trim_end_matches("()");
+        let sig = qalc::catalog().iter().find(|i| i.kind == qalc::ItemKind::Function && i.name == f).map(|i| i.signature.clone());
+        return match sig {
+            Some(sig) => format!("{f} needs more values inside its brackets: {sig}"),
+            None => format!("{f} needs more values inside its brackets."),
+        };
+    }
+    if err.ends_with("timed out") {
+        return "This function takes too long to calculate. Try a simpler one.".into();
+    }
+    err.into()
+}
+
+/// The first word that isn't x, π, e or known function names run together (sinx is sin x).
+fn unknown_word(text: &str) -> Option<String> {
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+    static NAMES: OnceLock<HashSet<String>> = OnceLock::new();
+    let names = NAMES.get_or_init(|| {
+        let f = qalc::catalog().iter().filter(|i| i.kind == qalc::ItemKind::Function).map(|i| i.name.clone());
+        f.chain(["x", "pi", "π", "e"].map(String::from)).collect()
+    });
+    let known = |w: &[char]| {
+        // ok[j]: w[..j] splits into names
+        let mut ok = vec![false; w.len() + 1];
+        ok[0] = true;
+        for j in 1..=w.len() {
+            ok[j] = (0..j).any(|i| ok[i] && names.contains(&w[i..j].iter().collect::<String>()));
+        }
+        ok[w.len()]
+    };
+    let cs: Vec<char> = text.chars().collect();
+    cs.split(|c| !c.is_alphabetic()).find(|w| !w.is_empty() && !known(w)).map(|w| w.iter().collect())
 }
 
 pub fn graph_figure() -> Figure {
@@ -213,6 +333,40 @@ mod tests {
         for s in ["x=2", "x²+y²=1", "y=x<2", "y=", "sin(□)", "y=x; quit"] {
             assert!(expression(s).is_err(), "{s}");
         }
+        for s in ["-x + 1", "x**2", "2^-x", "log(x, 2)", "sin(cos(x))", "x! / 2", "e^(-x²)", "(x + 1)(x − 1)", "3.5x", "√(x)"] {
+            assert_eq!(expression(s), Ok(s.into()), "{s}");
+        }
+    }
+    #[test]
+    fn syntax_mistakes_are_explained() {
+        let err = |s: &str| expression(s).unwrap_err();
+        assert!(err("2x +").contains("“+” at the end"), "{}", err("2x +"));
+        assert!(err("* x").contains("“*” at the start"));
+        assert!(err("x +* 2").contains("“+*” is two operators"));
+        assert!(err("(^x)").contains("right after “(”"));
+        assert!(err("sin(x +)").contains("right before “)”"));
+        assert_eq!(err("sin(x"), "“sin(x” is missing a closing “)”.");
+        assert_eq!(err("sin(cos(x"), "“sin(cos(x” is missing 2 closing “)”.");
+        assert!(err("x + 1)").contains("without a “(”"));
+        assert!(err("sin()").contains("“sin()” has nothing inside"));
+        assert!(err("()").contains("for example (x + 1)"));
+        assert!(err("2,5x").contains("For decimals use a point"));
+        assert!(err("log(x,)").contains("missing next to a comma"));
+        assert!(err("1.2.3x").contains("“1.2.3”"));
+        assert!(err("x..2").contains("“..2” has more than one decimal point"));
+    }
+    #[test]
+    fn qalc_errors_are_explained() {
+        assert!(explain("abc", qalc::UNITS_ERROR).contains("“abc”"));
+        assert!(explain("2foo(x)", qalc::UNITS_ERROR).contains("“foo”"));
+        // run-together functions are fine, so nothing to name
+        assert_eq!(explain("sinx + 30°", qalc::UNITS_ERROR), qalc::UNITS_ERROR);
+        assert!(explain("x+", "Misplaced operator(s) \"+\" ignored").starts_with("“+” is in a place"));
+        assert!(explain("#", "\"#\" is not a valid variable/function/unit.").contains("“#”"));
+        let e = explain("log()", "You need at least 1 argument (Value) in function log().");
+        assert!(e.starts_with("log needs more values"), "{e}");
+        assert!(explain("x", "plot sampling timed out").contains("too long"));
+        assert_eq!(explain("x", "something else"), "something else");
     }
     #[test]
     fn statistics_and_missing_values() {

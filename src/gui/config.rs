@@ -8,7 +8,7 @@ use crate::plot::{Rgb, Theme};
 
 pub const DEFAULT_INI: &str = "\
 # qcalcp GUI settings. Delete a key to get its default back.
-# [ui], [layout], [window], [calc] (but keypad_side) and [theme] dark are rewritten on exit;
+# [ui], [layout], [window], [calc] (but keypad_side) and [theme] appearance are rewritten on exit;
 # comments survive.
 
 [ui]
@@ -61,7 +61,8 @@ height=800
 maximized=false
 
 [theme]
-dark=true
+# system (follow the desktop's light / dark setting) | light | dark
+appearance=light
 # Plot overrides, applied to both dark and light. Any CSS color: #1e1e22, rgb(30,30,34), white
 #plot_bg=#1e1e22
 #plot_fg=#dcdcdc
@@ -154,6 +155,9 @@ pub struct Config {
     pub width: i32,
     pub height: i32,
     pub maximized: bool,
+    /// appearance::MODES name
+    pub appearance: &'static str,
+    /// what the appearance comes out as now ("system" is resolved by the GUI)
     pub dark: bool,
     pub editor_font: String,
     pub rotate_speed: f64,
@@ -205,6 +209,8 @@ impl Config {
         let hidden = ini.user.string("ui", "keypad_mode").is_err() && ini.user.boolean("ui", "keypad").is_ok_and(|on| !on);
         let mode = |s: &str| super::keypad::MODES.iter().map(|m| m.0).chain(["none"]).find(|m| *m == s);
         let keypad_mode = if hidden { "none" } else { ini.get("ui", "keypad_mode", mode).unwrap_or("general") };
+        // the previous version's [theme] dark=true was its default, so it isn't carried over
+        let appearance = ini.get("theme", "appearance", |s| super::appearance::MODES.iter().map(|m| m.0).find(|m| *m == s)).unwrap_or("light");
         let mut themes = [Theme::light(), Theme::dark()];
         for t in &mut themes {
             t.bg = bg.unwrap_or(t.bg);
@@ -244,7 +250,8 @@ impl Config {
             width: ini.get("window", "width", int).unwrap_or_default(),
             height: ini.get("window", "height", int).unwrap_or_default(),
             maximized: ini.get("window", "maximized", boolean).unwrap_or_default(),
-            dark: ini.get("theme", "dark", boolean).unwrap_or(true),
+            appearance,
+            dark: appearance == "dark",
             editor_font: ini.get("theme", "editor_font", |s| Some(s.to_string())).unwrap_or_default(),
             rotate_speed: ini.get("input", "rotate_speed", pos).unwrap_or(0.01),
             zoom_step: ini.get("input", "zoom_step", pos).unwrap_or(1.15),
@@ -256,7 +263,7 @@ impl Config {
         (cfg, ini.warn)
     }
 
-    /// Write mode/keypad/auto_visual/layout/window/dark back into `path`, keeping the user's other keys and comments.
+    /// Write mode/keypad/auto_visual/layout/window/appearance back into `path`, keeping the user's other keys and comments.
     pub fn save_state(&self, path: &Path) -> Result<(), String> {
         let kf = glib::KeyFile::new();
         let text = std::fs::read_to_string(path).unwrap_or_else(|_| DEFAULT_INI.into());
@@ -278,7 +285,8 @@ impl Config {
         kf.set_integer("window", "width", self.width);
         kf.set_integer("window", "height", self.height);
         kf.set_boolean("window", "maximized", self.maximized);
-        kf.set_boolean("theme", "dark", self.dark);
+        kf.set_string("theme", "appearance", self.appearance);
+        let _ = kf.remove_key("theme", "dark"); // the previous version's
         if let Some(d) = path.parent() {
             std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
         }
@@ -370,7 +378,8 @@ mod tests {
     fn defaults_and_overrides() {
         let (d, w) = Config::parse(DEFAULT_INI);
         assert!(w.is_empty(), "{w}");
-        assert!(!d.vertical && !d.plot_left && d.dark && d.show_console);
+        assert!(!d.vertical && !d.plot_left && !d.dark && d.show_console);
+        assert_eq!(d.appearance, "light");
         assert_eq!((d.split, d.width, d.zoom_step), (700, 1280, 1.15));
         assert!(d.hover_cursor && d.pin_radius == 24.0);
         assert!(d.calc_mode && !d.keypad_octave && d.auto_visual && d.keypad_side == "auto");
@@ -413,6 +422,13 @@ mod tests {
         let (c, _) = Config::parse("[ui]\nkeypad=false\nkeypad_mode=programming\n[keys]\ntoggle_workspace=F8\nkeypad=F10\n");
         assert_eq!((c.keypad_mode, c.keypad_last), ("programming", "programming"));
         assert_eq!(key(&c, "toggle_workspace"), ["F8"]); // a real rebind stays (the GUI warns about the clash)
+        // dark=true was the default; appearance is the new setting
+        let (c, w) = Config::parse("[theme]\ndark=true\n");
+        assert!(c.appearance == "light" && !c.dark && w.is_empty());
+        let (c, _) = Config::parse("[theme]\nappearance=system\n");
+        assert_eq!(c.appearance, "system");
+        let (c, w) = Config::parse("[theme]\nappearance=blue\n");
+        assert!(c.appearance == "light" && w.contains("appearance"));
         let (c, w) = Config::parse("[ui]\nkeypad_mode=sideways\n");
         assert!(c.keypad_mode == "general" && w.contains("keypad_mode"));
     }

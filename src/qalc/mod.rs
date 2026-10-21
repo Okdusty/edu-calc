@@ -64,6 +64,8 @@ pub struct Answer {
     /// "convert to Octave" artifact for plots.
     #[allow(dead_code)] // read by the calculator views
     pub visual: Option<String>,
+    /// the result carries units (km, or a physical constant such as c)
+    pub units: bool,
 }
 
 /// What a catalog entry is.
@@ -423,7 +425,7 @@ fn raw_calc(expr: &str, ms: i32, mode: c_int) -> Result<(Answer, Option<String>)
     if !f[0].is_empty() {
         return Err(list(f[0]).join("; "));
     }
-    let [_, input, result, approx, alts, value, octave, vars, msgs, assigned, visual] = f[..] else {
+    let [_, input, result, approx, alts, value, octave, vars, msgs, assigned, visual, units] = f[..] else {
         return Err("qalculate: malformed reply".into());
     };
     let alts = list(alts).iter().filter_map(|a| a.split_once('\x1d')).map(|(l, t)| (l.into(), t.into())).collect();
@@ -437,6 +439,7 @@ fn raw_calc(expr: &str, ms: i32, mode: c_int) -> Result<(Answer, Option<String>)
         free_vars: list(vars),
         messages: list(msgs),
         visual: some(visual),
+        units: units == "1",
     };
     Ok((a, some(assigned)))
 }
@@ -683,6 +686,9 @@ pub fn classroom_eval(expr: &str, opts: &Options) -> Result<ClassroomAnswer, Str
     result
 }
 
+/// classroom_curve's error when the expression came out with units; the Simple graph names the word.
+pub const UNITS_ERROR: &str = "This uses units or physical constants (like m, g or c). Graph a function of x with plain numbers.";
+
 /// Explicit y=f(x), sampled without changing the advanced calculator's options.
 pub fn classroom_curve(expr: &str, opts: &Options, lo: f64, hi: f64) -> Result<(Vec<f64>, Vec<f64>), String> {
     let _g = lock();
@@ -690,12 +696,21 @@ pub fn classroom_curve(expr: &str, opts: &Options, lo: f64, hi: f64) -> Result<(
     apply_raw(opts);
     let result = (|| {
         let (answer, _) = raw_calc(expr, PREVIEW_MS, PURE)?;
-        if answer.free_vars.iter().any(|v| v != "x") {
-            return Err("Use a function of x, for example y = 2x + 1.".into());
+        // qalc drops what it can't place ("2x+" is 2x) and says so: a graph of something else
+        if let Some(m) = answer.messages.iter().find(|m| m.contains("ignored")) {
+            return Err(m.clone());
+        }
+        let others: Vec<_> = answer.free_vars.iter().filter(|v| *v != "x").map(|v| format!("“{v}”")).collect();
+        if !others.is_empty() {
+            return Err(format!("Only x can vary in a graph, but this also uses {}. Replace it with a number, for example y = 2x + 1.", others.join(", ")));
         }
         // the Simple graph asks for twice the view: 1000 samples across what's shown
         let xs = linspace(lo, hi, 2001);
         let ys = raw_sample(expr, "x", "", &xs, &xs)?;
+        // a unit left over makes no sample a number (sin(x + 30°) keeps rad inside sin, and is fine)
+        if answer.units && ys.iter().all(|y| y.is_nan()) {
+            return Err(UNITS_ERROR.into());
+        }
         Ok(crate::plot::builtins::break_jumps(&xs, &ys))
     })();
     apply_raw(&previous);
@@ -870,7 +885,10 @@ mod tests {
         assert!((ys.last().unwrap() - 1.0).abs() < 1e-9);
         let (_, ys) = classroom_curve("1/x", &degrees, -1.0, 1.0).unwrap();
         assert!(ys.iter().any(|y| y.is_nan()));
-        assert!(classroom_curve("x+y", &degrees, -1.0, 1.0).is_err());
+        assert!(classroom_curve("x+y", &degrees, -1.0, 1.0).unwrap_err().contains("“y”"));
+        assert_eq!(classroom_curve("abc", &degrees, -1.0, 1.0).unwrap_err(), UNITS_ERROR);
+        assert!(classroom_curve("2x+", &degrees, -1.0, 1.0).unwrap_err().contains("ignored"));
+        assert!(classroom_curve("sin(x + 30°)", &degrees, -1.0, 1.0).is_ok());
         assert!(classroom_curve("3", &degrees, -1.0, 1.0).unwrap().1.iter().all(|y| *y == 3.0));
         assert_eq!(options(), previous);
     }

@@ -30,8 +30,8 @@
 //!              i.e. on top when vertical)  split, editor_split (px)
 //!              show_editor, show_console, show_workspace
 //!     [window] width, height, maximized     ([ui], [layout], [window], [calc] but keypad_side, and
-//!              dark are saved on exit)
-//!     [theme]  dark, plot_bg, plot_fg, plot_grid (CSS colors), palette=#..;#..;..., font,
+//!              appearance are saved on exit)
+//!     [theme]  appearance=system|light|dark (☰ Appearance; system follows the desktop), plot_bg, plot_fg, plot_grid (CSS colors), palette=#..;#..;..., font,
 //!              font_size (plot), editor_font (Pango, e.g. "Monospace 11")
 //!     [input]  rotate_speed (rad per dragged px), zoom_step (per wheel notch),
 //!              hover_cursor (readout under the mouse), pin_radius (px reach for picks and unpinning)
@@ -56,6 +56,7 @@
 //! nearest point (x, y, z and Δ to the axes' last pin, mirrored in the plot bar); a click or tap
 //! pins it, clicking a pin removes it. Trace mode (Trace button): dragging follows one series,
 //! with the canvas focused Left/Right step, Up/Down switch series, Enter pins.
+mod appearance;
 mod calc;
 mod canvas;
 mod complete;
@@ -170,6 +171,8 @@ struct Ui {
     workspace_box: gtk::Box,
     plot_side: gtk::Box,
     css_monitor: RefCell<Option<gio::FileMonitor>>,
+    /// desktop color-scheme source for the "system" appearance
+    portal: Option<gio::DBusProxy>,
 }
 
 impl Ui {
@@ -325,7 +328,6 @@ fn build(app: &gtk::Application, script: Option<PathBuf>) -> Rc<Ui> {
         .build();
     win.add_css_class("qcalcp");
 
-    let dark = cfg.dark;
     let (pages, keypad_warn) = keypad::load(&crate::config_dir().join("keypad.ini"));
     let calc_pop = Popup::new(complete::Target::Entry(calc.entry.clone()), Lang::Math);
     let repl_pop = Popup::new(complete::Target::Entry(repl.clone()), Lang::Octave);
@@ -369,6 +371,7 @@ fn build(app: &gtk::Application, script: Option<PathBuf>) -> Rc<Ui> {
         workspace_box,
         plot_side,
         css_monitor: RefCell::new(None),
+        portal: appearance::portal(),
     });
 
     let u = Rc::downgrade(&ui);
@@ -404,7 +407,16 @@ fn build(app: &gtk::Application, script: Option<PathBuf>) -> Rc<Ui> {
     sync_options(&ui);
     apply_layout(&ui);
     load_css(&ui);
-    set_dark(&ui, dark);
+    let mode = ui.cfg.borrow().appearance;
+    set_appearance(&ui, mode);
+    if let Some(p) = &ui.portal {
+        let u = Rc::downgrade(&ui);
+        appearance::on_change(p, move || {
+            if let Some(ui) = u.upgrade().filter(|ui| ui.cfg.borrow().appearance == "system") {
+                set_appearance(&ui, "system");
+            }
+        });
+    }
     canvas::attach(&ui);
     ui.print(&warnings, true);
     ui.print(&opt_warn, true);
@@ -530,9 +542,20 @@ fn menu() -> gio::Menu {
         None,
         &section(&[("Flip Layout", "toggle-layout"), ("Swap Sides", "swap-sides"), ("Editor", "toggle-editor"), ("Console", "toggle-console"), ("Workspace", "toggle-workspace")]),
     );
-    menu.append_section(None, &section(&[("Dark Theme", "dark"), ("Fullscreen", "fullscreen")]));
+    let view = section(&[("Fullscreen", "fullscreen")]);
+    view.prepend_submenu(Some("Appearance"), &appearance_menu());
+    menu.append_section(None, &view);
     menu.append_section(None, &section(&[("Quit", "quit")]));
     menu
+}
+
+/// System Default / Light / Dark radio items (app.appearance), for both shells' menus.
+pub(super) fn appearance_menu() -> gio::Menu {
+    let m = gio::Menu::new();
+    for (mode, label) in appearance::MODES {
+        m.append(Some(label), Some(&format!("app.appearance::{mode}")));
+    }
+    m
 }
 
 fn keypad_menu() -> gio::Menu {
@@ -665,7 +688,24 @@ fn actions(app: &gtk::Application, ui: &Rc<Ui>) {
         ui.cfg.borrow_mut().show_workspace = on;
         apply_layout(ui);
     });
-    toggle(app, ui, "dark", c.dark, set_dark);
+    // both shells: Simple's menu has Appearance too
+    let a = gio::SimpleAction::new_stateful("appearance", Some(glib::VariantTy::STRING), &c.appearance.to_variant());
+    let u = ui.clone();
+    a.connect_activate(move |_, v| {
+        let v = v.and_then(|v| v.str().map(String::from)).unwrap_or_default();
+        if let Some(mode) = appearance::MODES.iter().map(|m| m.0).find(|m| *m == v) {
+            set_appearance(&u, mode);
+        }
+    });
+    app.add_action(&a);
+    // [keys] dark: light <-> dark, from whatever "system" shows now
+    let a = gio::SimpleAction::new("dark", None);
+    let u = ui.clone();
+    a.connect_activate(move |_, _| {
+        let dark = u.cfg.borrow().dark;
+        set_appearance(&u, if dark { "light" } else { "dark" });
+    });
+    app.add_action(&a);
     // states are set by apply_layout
     toggle(app, ui, "keypad", false, |ui, on| {
         let last = ui.cfg.borrow().keypad_last;
@@ -959,12 +999,22 @@ fn to_calc(ui: &Rc<Ui>) {
     ui.calc.entry.set_position(-1);
 }
 
-fn set_dark(ui: &Rc<Ui>, on: bool) {
-    ui.cfg.borrow_mut().dark = on;
-    if let Some(s) = gtk::Settings::default() {
-        s.set_gtk_application_prefer_dark_theme(on);
+/// Appearance (appearance::MODES name) of both shells and their plots.
+fn set_appearance(ui: &Rc<Ui>, mode: &'static str) {
+    let dark = appearance::is_dark(mode, ui.portal.as_ref());
+    {
+        let mut c = ui.cfg.borrow_mut();
+        c.appearance = mode;
+        c.dark = dark;
+    }
+    appearance::apply(mode, dark);
+    if let Some(a) = ui.win.application().and_then(|app| app.lookup_action("appearance")).and_then(|a| a.downcast::<gio::SimpleAction>().ok()) {
+        a.set_state(&mode.to_variant());
     }
     ui.canvas.invalidate();
+    if let Some(s) = ui.simple.borrow().as_ref() {
+        s.theme_changed();
+    }
 }
 
 /// Switch shells without changing the remembered Advanced mode, theme, or calculator options.
