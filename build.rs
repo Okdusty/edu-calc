@@ -8,6 +8,8 @@ fn compile_icons() {
     for size in [16, 24, 32, 48, 64, 128, 256] {
         println!("cargo:rerun-if-changed=packaging/icons/{size}x{size}/apps/qcalcp.png");
     }
+    // the data table's row / column buttons
+    println!("cargo:rerun-if-changed=packaging/icons/scalable/actions");
     let status = Command::new("glib-compile-resources")
         .arg("packaging/qcalcp.gresource.xml").arg("--sourcedir=packaging")
         .arg("--target").arg(out.join("qcalcp.gresource"))

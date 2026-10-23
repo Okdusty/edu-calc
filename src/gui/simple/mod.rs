@@ -1050,8 +1050,10 @@ mod tests {
         let image = gtk::WidgetPaintable::new(Some(&pop));
         let snapshot = gtk::Snapshot::new();
         image.snapshot(&snapshot, pop.width() as f64, pop.height() as f64);
-        let renderer = pop.native().unwrap().renderer().unwrap();
-        renderer.render_texture(&snapshot.to_node().unwrap(), None).save_to_png("target/simple-functions.png").unwrap();
+        // visual QA only: the popover may not be mapped yet on a slow display
+        if let (Some(r), Some(node)) = (pop.native().and_then(|n| n.renderer()), snapshot.to_node()) {
+            r.render_texture(&node, None).save_to_png("target/simple-functions.png").unwrap();
+        }
         s.functions.popdown();
         s.press("log(□, □)");
         assert_eq!(s.entry.text(), "log(□, □)");
@@ -1107,6 +1109,10 @@ mod tests {
         s.select(SimpleTab::Data);
         settle();
         assert!(!s.side_keys.is_visible() && !s.function_keys.is_visible(), "the table takes only the number pad");
+        let icons = gtk::IconTheme::for_display(&WidgetExt::display(&ui.win));
+        for name in ["row-insert-symbolic", "row-delete-symbolic", "column-insert-symbolic", "column-delete-symbolic"] {
+            assert!(icons.has_icon(name), "embedded {name} is missing");
+        }
         let chart_height = s.data_board.area.height();
         s.toggle_keypad();
         settle();
@@ -1145,6 +1151,32 @@ mod tests {
         s.data.root.activate_action("ed.del-row", None).unwrap();
         settle();
         assert!(s.stats.text().contains("mean = 1.5"));
+        // the row / column buttons, as a finger presses them
+        let button = |act: &str| {
+            let mut stack = vec![s.data.root.clone().upcast::<gtk::Widget>()];
+            while let Some(w) = stack.pop() {
+                if let Some(b) = w.downcast_ref::<gtk::Button>().filter(|b| b.action_name().as_deref() == Some(act)) {
+                    return b.clone();
+                }
+                stack.extend(std::iter::successors(w.first_child(), |c| c.next_sibling()));
+            }
+            panic!("no {act} button");
+        };
+        let rows = s.data.grid().len();
+        button("ed.add-row").emit_clicked();
+        settle();
+        assert_eq!(s.data.grid().len(), rows + 1);
+        button("ed.del-row").emit_clicked();
+        settle();
+        assert_eq!(s.data.grid().len(), rows);
+        button("ed.add-col").emit_clicked();
+        settle();
+        assert_eq!(s.data.grid()[0].len(), 3);
+        button("ed.del-col").emit_clicked();
+        settle();
+        assert_eq!(s.data.grid()[0].len(), 2);
+        assert!(s.stats.text().contains("mean = 1.5"), "blank rows and columns came and went: {}", s.stats.text());
+
         // one table on both sides: Advanced gets it as `data` plus X, and Octave's changes come back
         super::super::show_simple(&ui, false);
         settle();

@@ -1,7 +1,8 @@
 //! Data editor: a window with a spreadsheet grid. Row 0 holds the column names (echoed in the
 //! column titles, which stay in view), the rows below the numbers: blank = NaN, text is flagged
 //! and becomes NaN, a decimal comma is fine. Enter / Down, Shift+Enter / Up, Tab, Shift+Tab move
-//! between cells; Enter on the last row adds one. Ctrl+V (or Paste) fills a TSV/CSV block from a
+//! between cells; Enter on the last row adds one. The row and column buttons insert below / right
+//! of the selected cell or delete its row / column. Ctrl+V (or Paste) fills a TSV/CSV block from a
 //! spreadsheet or text at the current cell; a header line pasted at the top goes to the names row.
 //! Import reads csv/tsv/txt/xlsx/xls/ods like readmatrix (a sheet picker for workbooks), Export
 //! writes csv/tsv. To Workspace assigns the matrix plus every column whose name is a valid
@@ -203,11 +204,7 @@ fn create(ui: &Rc<Ui>, var: Option<&str>, embedded: bool) -> Option<Rc<Ed>> {
     let export_b = btn("document-save-as-symbolic", "Export as .csv or .tsv…");
     let paste_b = btn("edit-paste-symbolic", "Paste cells from a spreadsheet or text at the current cell (Ctrl+V)");
     let sheets = gtk::DropDown::builder().tooltip_text("Sheet").visible(false).build();
-    let menu = gio::Menu::new();
-    for (label, act) in [("Insert Row Below", "ed.add-row"), ("Delete Row", "ed.del-row"), ("Insert Column Right", "ed.add-col"), ("Delete Column", "ed.del-col")] {
-        menu.append(Some(label), Some(act));
-    }
-    let more = gtk::MenuButton::builder().icon_name("view-more-symbolic").menu_model(&menu).tooltip_text("Rows and columns").build();
+    let edits = table_buttons(embedded);
     let stats_b = gtk::ToggleButton::builder().label("Σ").tooltip_text("Column statistics: n, mean, median, std, min, max").build();
     let name = gtk::Entry::builder().text(var.unwrap_or("data")).width_chars(8).tooltip_text("Workspace variable").build();
     let to_ws = gtk::Button::builder().label("To Workspace").tooltip_text("Assign the matrix, and each column with a valid name as its own variable").build();
@@ -216,7 +213,7 @@ fn create(ui: &Rc<Ui>, var: Option<&str>, embedded: bool) -> Option<Rc<Ed>> {
     send.append(&to_ws);
     let plot_b = gtk::Button::builder().label("Plot").tooltip_text("Plot columns 2… against column 1 (a single column against its index)").build();
     let header = gtk::HeaderBar::new();
-    for w in [import_b.upcast_ref::<gtk::Widget>(), export_b.upcast_ref(), paste_b.upcast_ref(), more.upcast_ref(), sheets.upcast_ref()] {
+    for w in [import_b.upcast_ref::<gtk::Widget>(), export_b.upcast_ref(), paste_b.upcast_ref(), edits.upcast_ref(), sheets.upcast_ref()] {
         header.pack_start(w);
     }
     header.pack_end(&plot_b);
@@ -228,14 +225,16 @@ fn create(ui: &Rc<Ui>, var: Option<&str>, embedded: bool) -> Option<Rc<Ed>> {
     let status = gtk::Label::builder().xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).margin_start(8).margin_end(8).margin_top(2).margin_bottom(4).build();
     let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
     if embedded {
-        // the standalone header's buttons as a slim toolbar; rows and columns stay in the ⋮ menu
+        // the standalone header's buttons as a slim toolbar, rows and columns on a line of their own
         let tools = gtk::Box::builder().spacing(2).css_classes(["toolbar"]).build();
-        for w in [import_b.upcast_ref::<gtk::Widget>(), export_b.upcast_ref(), paste_b.upcast_ref(), more.upcast_ref(), sheets.upcast_ref()] {
+        for w in [import_b.upcast_ref::<gtk::Widget>(), export_b.upcast_ref(), paste_b.upcast_ref(), edits.upcast_ref(), sheets.upcast_ref()] {
             header.remove(w);
             w.set_focus_on_click(false);
             tools.append(w);
         }
+        tools.remove(&edits);
         body.append(&tools);
+        body.append(&edits);
     }
     body.append(&gtk::ScrolledWindow::builder().child(&cv).vexpand(true).build());
     body.append(&stats_box);
@@ -352,6 +351,36 @@ fn create(ui: &Rc<Ui>, var: Option<&str>, embedded: bool) -> Option<Rc<Ed>> {
     refresh(&ed);
     if !embedded { ed.win.present(); }
     Some(ed)
+}
+
+/// Insert / delete row and column buttons for the selected cell: a table glyph with the row or
+/// column marked and a green + or red −. `labeled` (the classroom tab, where touch has no
+/// tooltips): "Rows" and "Columns" captions and bigger glyphs.
+fn table_buttons(labeled: bool) -> gtk::Box {
+    let bar = gtk::Box::builder().spacing(if labeled { 8 } else { 6 }).build();
+    if labeled {
+        bar.add_css_class("table-edit");
+        bar.set_margin_start(8);
+        bar.set_margin_end(8);
+        bar.set_margin_bottom(4);
+    }
+    let groups = [
+        ("Rows", [("row-insert-symbolic", "Insert a row below the selected cell", "ed.add-row"), ("row-delete-symbolic", "Delete the selected cell's row", "ed.del-row")]),
+        ("Columns", [("column-insert-symbolic", "Insert a column right of the selected cell", "ed.add-col"), ("column-delete-symbolic", "Delete the selected cell's column", "ed.del-col")]),
+    ];
+    for (i, (caption, pair)) in groups.into_iter().enumerate() {
+        if labeled {
+            let l = gtk::Label::builder().label(caption).css_classes(["dim-label"]).margin_start(if i > 0 { 8 } else { 0 }).build();
+            bar.append(&l);
+        }
+        let linked = gtk::Box::builder().css_classes(["linked"]).build();
+        for (icon, tip, act) in pair {
+            let image = gtk::Image::builder().icon_name(icon).pixel_size(if labeled { 20 } else { 16 }).build();
+            linked.append(&gtk::Button::builder().child(&image).tooltip_text(tip).action_name(act).focus_on_click(false).build());
+        }
+        bar.append(&linked);
+    }
+    bar
 }
 
 /// Names row (padded to the width) above the matrix; NaN shows blank.

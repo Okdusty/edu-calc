@@ -8,5 +8,9 @@
     <file>icons/64x64/apps/qcalcp.png</file>
     <file>icons/128x128/apps/qcalcp.png</file>
     <file>icons/256x256/apps/qcalcp.png</file>
+    <file>icons/scalable/actions/row-insert-symbolic.svg</file>
+    <file>icons/scalable/actions/row-delete-symbolic.svg</file>
+    <file>icons/scalable/actions/column-insert-symbolic.svg</file>
+    <file>icons/scalable/actions/column-delete-symbolic.svg</file>
   </gresource>
 </gresources>

@@ -37,8 +37,8 @@ double-click it to reset. The focused bar also takes Up/Down and Home.
   points. Only explicit functions of `x` are supported: no implicit equations,
   inequalities, sliders or 3-D graphs.
 - **Data:** type or paste a numeric table, or import CSV/TSV/text/XLSX/XLS/ODS. The table's
-  toolbar has import, export (CSV/TSV), paste, and a ⋮ menu that inserts and deletes rows and
-  columns at the selected cell. Pick Scatter, Line, Bar or Histogram and the x and y columns
+  toolbar has import, export (CSV/TSV) and paste; under it, **Rows** and **Columns** buttons
+  (a green + inserts below / right of the selected cell, a red − deletes its row / column). Pick Scatter, Line, Bar or Histogram and the x and y columns
   (x can be the row number). Below the chart: n, mean, median, sample standard deviation, min
   and max of the y column, and for X/Y charts the least-squares line `y = mx + b` over complete
   numeric pairs (at least two, with distinct x). Missing and non-numeric cells are skipped and
