@@ -462,6 +462,7 @@ try {
     if (tabs.right > end.left + 1) out.push(`tabs (to ${tabs.right}) run into the tools (from ${end.left})`);
     for (const b of document.querySelectorAll('.headerbar button, .keypad button')) {
       if (visible(b) && b.scrollWidth > b.clientWidth + 1) out.push(`clipped: ${b.textContent}`);
+      if (visible(b) && b.closest('.keypad') && (b.scrollHeight > b.clientHeight + 1 || b.getBoundingClientRect().height < 26)) out.push(`too short (${b.getBoundingClientRect().height}): ${b.textContent}`);
       if (visible(b) && b.getBoundingClientRect().height > 60 && b.closest('.headerbar')) out.push(`wrapped: ${b.textContent}`);
     }
     return out;
