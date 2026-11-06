@@ -506,10 +506,17 @@ class App {
     this.slotKeys(this.entry);
     this.entry.addEventListener('input', () => this.queueCalculation(false));
     this.entry.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); this.queueCalculation(true); } });
+    // Only the user's own scrolling lets go of the newest answer: a scroll event can also be left over
+    // from a tab switch, and arrive when new answers have already made it look scrolled up.
+    const touched = () => { this.historyTouched = performance.now(); };
+    for (const type of ['wheel', 'touchmove', 'pointerdown', 'keydown']) this.historyScroll.addEventListener(type, touched, { passive: true });
     this.historyScroll.addEventListener('scroll', () => {
       const s = this.historyScroll;
-      if (this.ignoreScroll) { this.ignoreScroll = false; return; }
-      this.historyStick = s.scrollTop >= s.scrollHeight - s.clientHeight - 1;
+      if (s.scrollTop >= s.scrollHeight - s.clientHeight - 1) this.historyStick = true;
+      else if (performance.now() - (this.historyTouched ?? -Infinity) < 1500) {
+        this.historyStick = false;
+        touched(); // a flick keeps gliding after the finger lifts
+      }
     });
     // the answers rise with the entry: the newest stays in view when the space changes
     const stick = () => { if (this.historyStick) this.scrollHistoryDown(); };
@@ -523,8 +530,7 @@ class App {
 
   scrollHistoryDown() {
     const s = this.historyScroll;
-    const target = s.scrollHeight - s.clientHeight;
-    if (Math.abs(s.scrollTop - target) > 0.5) { this.ignoreScroll = true; s.scrollTop = target; }
+    s.scrollTop = s.scrollHeight - s.clientHeight;
   }
 
   toggleDecimal() {

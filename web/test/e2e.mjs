@@ -348,6 +348,26 @@ try {
   await page.waitForTimeout(120);
   assert.ok(await atBottom(), 'smaller window: newest answer in view');
   await page.setViewportSize({ width: 1366, height: 860 });
+  await page.waitForTimeout(120);
+  assert.ok(await atBottom(), 'bigger window: newest answer in view');
+  await tab('Graph');
+  await tab('Calculator');
+  await page.waitForTimeout(120);
+  assert.ok(await atBottom(), 'back from another tab: newest answer in view');
+  const hist = await page.locator('.history-scroll').boundingBox();
+  await page.mouse.move(hist.x + hist.width / 2, hist.y + 50);
+  await page.mouse.wheel(0, -600);
+  await page.waitForTimeout(150);
+  assert.ok(!(await atBottom()), 'scrolled up by hand');
+  const kept = await page.evaluate(() => document.querySelector('.history-scroll').scrollTop);
+  await page.evaluate(() => window.app.setKeypadHeight(200));
+  await page.waitForTimeout(120);
+  assert.ok(Math.abs(await page.evaluate(() => document.querySelector('.history-scroll').scrollTop) - kept) < 2, 'and it stays there');
+  await page.fill('.input-row input', '1 + 1');
+  await key('Enter');
+  await until(() => window.app.lastExpr === '1 + 1');
+  await page.waitForTimeout(120);
+  assert.ok(await atBottom(), 'a new answer brings it back');
 
   check('clear history, in the page and in storage');
   await page.locator('.clear-history').click();
