@@ -49,3 +49,35 @@ jobs:
         with:
           name: engine
           path: web/app/engine/
+      - name: Package
+        run: node web/engine/package.mjs
+      - name: Browser
+        working-directory: web
+        run: npm install --no-save --no-audit --no-fund playwright@1.56 && npx playwright install --with-deps chromium
+      - name: The site in a browser, online and offline
+        working-directory: web
+        run: node test/e2e.mjs
+      - name: Screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: web/shots/
+          if-no-files-found: ignore
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  deploy:
+    if: github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

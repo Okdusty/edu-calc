@@ -9,6 +9,8 @@ OUT=$ROOT/web/app/engine
 P=$WORK/prefix
 GMP=6.3.0 MPFR=4.2.2 XML=2.13.8 QALC=5.12.0
 JOBS=$(nproc)
+# cross-compiling: configure must not try to run what emcc makes
+CROSS="--build=x86_64-pc-linux-gnu --host=wasm32-unknown-emscripten"
 mkdir -p "$WORK/src" "$P" "$OUT"
 export EM_PKG_CONFIG_PATH=$P/lib/pkgconfig PKG_CONFIG_PATH=$P/lib/pkgconfig PKG_CONFIG_LIBDIR=$P/lib/pkgconfig
 
@@ -28,7 +30,7 @@ if [ ! -f "$P/lib/libmpfr.a" ]; then
     fetch mpfr.tar.xz "https://ftp.gnu.org/gnu/mpfr/mpfr-$MPFR.tar.xz"
     rm -rf "$WORK/mpfr" && mkdir "$WORK/mpfr" && tar xf "$WORK/src/mpfr.tar.xz" -C "$WORK/mpfr" --strip-components=1
     (cd "$WORK/mpfr"
-     CFLAGS=-O2 emconfigure ./configure --prefix="$P" --with-gmp="$P" --disable-shared --enable-static --disable-thread-safe
+     CFLAGS=-O2 emconfigure ./configure $CROSS --prefix="$P" --with-gmp="$P" --disable-shared --enable-static --disable-thread-safe
      emmake make -j"$JOBS" && emmake make install)
 fi
 
@@ -36,7 +38,7 @@ if [ ! -f "$P/lib/libxml2.a" ]; then
     fetch xml.tar.xz "https://download.gnome.org/sources/libxml2/${XML%.*}/libxml2-$XML.tar.xz"
     rm -rf "$WORK/xml" && mkdir "$WORK/xml" && tar xf "$WORK/src/xml.tar.xz" -C "$WORK/xml" --strip-components=1
     (cd "$WORK/xml"
-     CFLAGS=-O2 emconfigure ./configure --prefix="$P" --disable-shared --enable-static --without-python --without-zlib --without-lzma \
+     CFLAGS=-O2 emconfigure ./configure $CROSS --prefix="$P" --disable-shared --enable-static --without-python --without-zlib --without-lzma \
          --without-iconv --without-icu --without-threads --without-http --without-ftp --without-modules --without-catalog --without-debug
      emmake make -j"$JOBS" libxml2.la && emmake make install-libLTLIBRARIES install-pkgconfigDATA && emmake make -C include install)
 fi
@@ -48,7 +50,7 @@ if [ ! -f "$P/lib/libqalculate.a" ]; then
     # ac_cv_prog_cc_c23: configure also looks for a host compiler and reuses emcc's -std=gnu23 on it
     (cd "$Q"
      ac_cv_prog_cc_c23=no CPPFLAGS="-I$P/include" LDFLAGS="-L$P/lib" CFLAGS=-O2 CXXFLAGS="-O2 -fwasm-exceptions" \
-         emconfigure ./configure --prefix="$P" --disable-shared --enable-static --enable-compiled-definitions --disable-nls \
+         emconfigure ./configure $CROSS --prefix="$P" --disable-shared --enable-static --enable-compiled-definitions --disable-nls \
          --disable-textport --disable-tests --disable-insecure --without-libcurl --without-icu --without-gnuplot-call --without-readline
      emmake make -C data
      emmake make -j"$JOBS" -C libqalculate

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<title>EduCalc</title>
+<meta name="description" content="Calculator, function grapher and data table for the classroom. Works offline.">
+<meta name="theme-color" content="#ebebeb">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+<script>
+  // before the first paint: no flash of the wrong theme
+  try {
+    const mode = localStorage.getItem('educalc.appearance') || 'light';
+    const dark = mode === 'dark' || (mode === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  } catch (e) {
+    document.documentElement.dataset.theme = 'light';
+  }
+</script>
+</head>
+<body>
+<header class="headerbar">
+  <div class="header-start"></div>
+  <nav class="tabs" role="tablist" aria-label="Views"></nav>
+  <div class="header-end"></div>
+</header>
+<main class="workspace"></main>
+<section class="keypad-wrap" aria-label="Keypad"></section>
+<noscript>EduCalculator needs JavaScript.</noscript>
+<script type="module" src="main.js"></script>
+</body>
+</html>

@@ -6,7 +6,7 @@ const TIMEOUT_MS = 5000;
 // the desktop's 300, for a slower engine
 const PREVIEW_MS = 1000;
 const PURE = 2;
-export const DEFAULT_OPTIONS = { angle: 'rad', approx: 'try', precision: 10, fraction: 'auto', notation: 'auto', base: 10, inputBase: 10, twos: true, bits: 0 };
+export { DEFAULT_OPTIONS } from './engine-core-options.js';
 
 const list = (s) => s.split('\x1e').filter((x) => x !== '');
 const literal = (values) => `[${values.map((x) => x.toExponential().toUpperCase().replace('E+', 'E')).join(', ')}]`;

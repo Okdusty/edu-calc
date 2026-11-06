@@ -2,3 +2,7 @@
 /samples
 /web/engine/.build
 /web/app/engine
+/web/dist
+/web/shots
+/web/node_modules
+/web/package-lock.json

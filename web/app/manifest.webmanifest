@@ -1,0 +1,16 @@
+{
+  "name": "EduCalculator",
+  "short_name": "EduCalc",
+  "description": "Calculator, function grapher and data table for the classroom. Works offline.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ebebeb",
+  "theme_color": "#ebebeb",
+  "categories": ["education", "productivity"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
