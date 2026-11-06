@@ -508,7 +508,7 @@ try {
   assert.equal(await t.locator('.input-row input').evaluate((e) => e.inputMode), 'none', 'the keypad replaces the on-screen keyboard');
   await t.locator('.keypad button', { hasText: /^7$/ }).tap();
   await t.locator('.keypad button', { hasText: /^x²$/ }).tap();
-  assert.equal(await t.inputValue('.input-row input'), '7□²'.replace('□', ''), 'keys type at the cursor');
+  assert.equal(await t.inputValue('.input-row input'), '7□²', 'keys type at the cursor');
   await t.fill('.input-row input', '');
   await t.locator('.tabs button', { hasText: 'Graph' }).tap();
   await t.locator('.graph-row input[type="text"]').first().fill('x²');
