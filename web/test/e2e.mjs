@@ -10,8 +10,18 @@ const shots = new URL('../shots/', import.meta.url).pathname;
 mkdirSync(shots, { recursive: true });
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.wasm': 'application/wasm', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
 // SITE_URL: test what's published instead of web/dist
+// the local server can misbehave on demand: requests for the engine it answers 503 while these say so
+const engineTrouble = { failNext: 0, down: false, requests: 0 };
 const server = process.env.SITE_URL ? null : createServer((req, res) => {
   const path = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+  if (path.endsWith('qalc.wasm')) {
+    engineTrouble.requests++;
+    if (engineTrouble.down || engineTrouble.failNext > 0) {
+      engineTrouble.failNext--;
+      res.writeHead(503).end('busy');
+      return;
+    }
+  }
   if (!path.startsWith('/edu-calc/')) { res.writeHead(404).end(); return; }
   let file = join(dist, path.slice('/edu-calc/'.length));
   if (path.endsWith('/')) file = join(file, 'index.html');
@@ -500,31 +510,37 @@ try {
   await page.waitForTimeout(250);
   await shot('13-board-graph');
 
-  check('the server hiccups: the engine and the offline copy still arrive');
-  const flaky = await browser.newContext({ viewport: { width: 1366, height: 860 } });
-  const f = await flaky.newPage();
-  let hits = 0;
-  await flaky.route('**/engine/qalc.wasm', (r) => (++hits <= 2 ? r.fulfill({ status: 503, body: 'busy' }) : r.continue()));
-  await f.goto(url);
-  await f.waitForFunction(() => window.app?.engine?.ready === true, undefined, { timeout: 60000 });
-  await f.fill('.input-row input', '2 + 2');
-  await f.waitForFunction(() => document.querySelector('.preview').textContent === '= 4', undefined, { timeout: 30000 });
-  assert.ok(hits >= 3, `the download was tried again (${hits} times)`);
-  await f.evaluate(() => navigator.serviceWorker.ready);
-  await f.waitForFunction(async () => {
-    const names = await caches.keys();
-    return names.length > 0 && (await (await caches.open(names[0])).keys()).some((r) => r.url.endsWith('engine/qalc.wasm'));
-  }, undefined, { timeout: 60000 });
-  await flaky.close();
+  if (!process.env.SITE_URL) {
+    check('the server hiccups: the engine and the offline copy still arrive');
+    const flaky = await browser.newContext({ viewport: { width: 1366, height: 860 } });
+    const f = await flaky.newPage();
+    Object.assign(engineTrouble, { failNext: 3, requests: 0 });
+    await f.goto(url);
+    await f.waitForFunction(() => window.app?.engine?.ready === true, undefined, { timeout: 60000 });
+    await f.fill('.input-row input', '2 + 2');
+    await f.waitForFunction(() => document.querySelector('.preview').textContent === '= 4', undefined, { timeout: 30000 });
+    assert.ok(engineTrouble.requests > 3, `tried again after the failures (${engineTrouble.requests} requests)`);
+    await f.evaluate(() => navigator.serviceWorker.ready);
+    await f.waitForFunction(async () => {
+      const names = await caches.keys();
+      return names.length > 0 && (await (await caches.open(names[0])).keys()).some((r) => r.url.endsWith('engine/qalc.wasm'));
+    }, undefined, { timeout: 60000 });
+    await flaky.close();
 
-  const down = await browser.newContext({ viewport: { width: 1366, height: 860 } });
-  const g = await down.newPage();
-  await down.route('**/engine/qalc.wasm', (r) => r.fulfill({ status: 503, body: 'busy' }));
-  await g.goto(url);
-  await g.waitForFunction(() => document.querySelector('.message').textContent.includes('could not load'), undefined, { timeout: 60000 });
-  await down.unroute('**/engine/qalc.wasm');
-  await g.waitForFunction(() => window.app?.engine?.ready === true && document.querySelector('.message').textContent === '', undefined, { timeout: 60000 });
-  await down.close();
+    check('the server stays down: the app says so, and recovers by itself');
+    const gone = await browser.newContext({ viewport: { width: 1366, height: 860 } });
+    const g = await gone.newPage();
+    engineTrouble.down = true;
+    await g.goto(url);
+    await g.waitForFunction(() => document.querySelector('.message').textContent.includes('could not load'), undefined, { timeout: 60000 });
+    assert.match(await g.locator('.message').first().innerText(), /503/);
+    await g.screenshot({ path: join(shots, '15-server-down.png') });
+    engineTrouble.down = false;
+    await g.waitForFunction(() => window.app?.engine?.ready === true && document.querySelector('.message').textContent === '', undefined, { timeout: 60000 });
+    await g.fill('.input-row input', '2 + 2');
+    await g.waitForFunction(() => document.querySelector('.preview').textContent === '= 4', undefined, { timeout: 30000 });
+    await gone.close();
+  }
 
   check('touch: tap, flick, pinch and double-tap with real fingers');
   const touchContext = await browser.newContext({ viewport: { width: 1366, height: 860 }, hasTouch: true });
