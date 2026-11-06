@@ -214,8 +214,19 @@ try {
   await cell(1, 0).click();
   await keys('1', 'Enter', '2', 'Enter', '3');
   assert.equal(await cell(3, 0).inputValue(), '3');
+  await statsHas('3 rows skipped'); // the y column, Y, is still empty
+  const [chartSel, xSel, ySel] = [0, 1, 2].map((i) => page.locator('.selectors select').nth(i));
+  await xSel.selectOption({ label: 'Row number' });
+  await ySel.selectOption({ label: 'X' });
   await statsHas('mean = 2');
   await statsHas('sd = 1');
+  await statsHas('Best-fit line: y = 1x + 0');
+  await chartSel.selectOption({ label: 'Histogram' });
+  await statsHas('mean = 2');
+  assert.ok(!(await page.locator('.stats').innerText()).includes('Best-fit'), 'no line through a histogram');
+  await chartSel.selectOption({ label: 'Scatter' });
+  await xSel.selectOption({ label: 'X' });
+  await ySel.selectOption({ label: 'Y' });
   await page.evaluate(() => { window.app.table.setGrid([['X', 'Y'], ['1', '2.1'], ['2', '3.9'], ['3', '6.2'], ['4', '7.8'], ['5', '10.1'], ['6', '12.2'], ['', '']], [1, 0]); window.app.table.changed(); });
   await statsHas('Best-fit line: y = 2.02x');
   await statsHas('r = 0.9991');
