@@ -251,7 +251,7 @@ test('key points: sine and cubic', () => {
 test('curves break at poles', () => {
   // NaN beside the pole, as the engine samples them: the jump around it still breaks the line
   const xs = linspace(-20, 20, 2001);
-  for (const [f, breaks] of [[(x) => (x === 0 ? NaN : 1 / x), 2], [(x) => (x <= 0 ? NaN : Math.log(x)), 1], [(x) => (x * x === 1 ? NaN : 1 / (x * x - 1)), 4]]) {
+  for (const [f, breaks] of [[(x) => (x === 0 ? NaN : 1 / x), 2], [(x) => (x < 0 ? NaN : Math.log(x)), 1], [(x) => (x * x === 1 ? NaN : 1 / (x * x - 1)), 4]]) {
     const [bx, by] = L.breakJumps(xs, xs.map(f));
     eq(bx.filter(Number.isNaN).length, breaks, String(f));
     eq(bx.length, by.length);
