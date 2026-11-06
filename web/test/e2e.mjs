@@ -358,6 +358,7 @@ try {
   await page.fill('.input-row input', '6 × 7');
   await previewIs('= 42');
   await page.fill('.input-row input', '');
+  await tab('Data');
 
   check('data: paste, import csv and xlsx, export');
   await cell(1, 0).click();
