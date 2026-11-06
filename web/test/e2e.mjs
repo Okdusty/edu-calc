@@ -716,7 +716,23 @@ try {
   // from a clean slate: nothing left over from the online pass, only the offline copy
   await page.evaluate(() => localStorage.clear());
   await page.setViewportSize({ width: 1366, height: 860 });
-  await page.reload();
+  const t0 = Date.now();
+  const trace = (kind) => (r) => console.log(`  [${Date.now() - t0} ms] ${kind} ${r.url().replace(url, '')} ${r.resourceType()} sw=${r.serviceWorker() ? 'y' : 'n'} ${r.failure()?.errorText ?? ''}`);
+  page.on('request', trace('start')); page.on('requestfinished', trace('done')); page.on('requestfailed', trace('FAIL'));
+  page.on('framenavigated', () => console.log(`  [${Date.now() - t0} ms] navigated`));
+  page.on('domcontentloaded', () => console.log(`  [${Date.now() - t0} ms] domcontentloaded`));
+  page.on('load', () => console.log(`  [${Date.now() - t0} ms] load`));
+  context.on('serviceworker', (w) => console.log(`  [${Date.now() - t0} ms] service worker started ${w.url()}`));
+  console.log('  state before:', await page.evaluate(async () => {
+    const r = await navigator.serviceWorker.getRegistration();
+    return JSON.stringify({ active: r?.active?.state, waiting: r?.waiting?.state, installing: r?.installing?.state, controller: navigator.serviceWorker.controller?.state, caches: await caches.keys() });
+  }));
+  await page.reload({ timeout: 20000 }).catch(async (e) => {
+    console.log(`  reload stuck: ${e.message.split('\n')[0]}`);
+    console.log('  url', page.url());
+    console.log('  after:', await page.evaluate(() => JSON.stringify({ ready: document.readyState, scripts: performance.getEntriesByType('resource').map((r) => r.name.split('/').pop()) })).catch((x) => `no answer: ${x.message.split('\n')[0]}`));
+    throw e;
+  });
   await ready();
   const offlineTab = await context.newPage();
   await offlineTab.goto(url);
