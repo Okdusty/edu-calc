@@ -714,7 +714,8 @@ try {
   await t.waitForTimeout(150);
   const widened = await t.locator('.graph-side').evaluate((e) => e.clientWidth);
   assert.ok(widened > after2, 'the panes keep their proportions in a bigger window');
-  assert.ok(await t.locator('.graph-row input[type="text"]').first().evaluate((e) => parseFloat(getComputedStyle(e).fontSize)) > eq2, 'and the equations grow with them');
+  // and the equations grow with them, on the browser's next frame
+  await t.waitForFunction((was) => parseFloat(getComputedStyle(document.querySelector('.graph-row input[type="text"]')).fontSize) > was, eq2, { timeout: 10000 });
   const grip = await t.locator('.keypad-grip').boundingBox();
   const kh = await t.locator('.keypad').evaluate((e) => e.offsetHeight);
   await fingers('touchStart', [[grip.x + grip.width / 2, grip.y + 5]]);
