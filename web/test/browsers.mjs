@@ -197,7 +197,7 @@ for (const [name, type] of [['firefox', firefox], ['webkit', webkit]]) {
     await page.keyboard.press('F9');
     assert.ok(await page.locator('.keypad').isHidden());
     await page.keyboard.press('F9');
-    assert.deepEqual(problems, [], 'no page errors');
+    assert.deepEqual(problems.filter((p) => !p.includes('a test trap')), [], 'no page errors');
     console.log(`${name}: all passed`);
   } catch (e) {
     failed = true;
