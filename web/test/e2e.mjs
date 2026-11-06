@@ -701,9 +701,17 @@ try {
   await until(() => navigator.serviceWorker.controller !== null).catch(() => page.reload());
   await until(async () => (await caches.keys()).some((k) => k.startsWith('educalc-')));
   await page.waitForTimeout(500);
-  if (server) { server.closeAllConnections(); await new Promise((r) => server.close(r)); serverStopped = true; }
-  await context.setOffline(true);
-  assert.equal(await page.evaluate(() => navigator.onLine), false);
+  // locally the server itself goes away; GitHub's can't be stopped, so there the browser is told it's offline
+  if (server) {
+    server.closeAllConnections();
+    await new Promise((r) => server.close(r));
+    serverStopped = true;
+    assert.equal(await page.evaluate(() => fetch('sw.js?network', { cache: 'no-store' }).then(() => 'answered', () => 'gone')), 'answered', 'the service worker still answers');
+    await page.evaluate(() => fetch(new Request(`${location.origin}/edu-calc/not-in-the-copy`)).then(() => { throw new Error('the server is still up'); }, () => 'gone'));
+  } else {
+    await context.setOffline(true);
+    assert.equal(await page.evaluate(() => navigator.onLine), false);
+  }
   // from a clean slate: nothing left over from the online pass, only the offline copy
   await page.evaluate(() => localStorage.clear());
   await page.setViewportSize({ width: 1366, height: 860 });
