@@ -12,6 +12,9 @@ const list = (s) => s.split('\x1e').filter((x) => x !== '');
 const literal = (values) => `[${values.map((x) => x.toExponential().toUpperCase().replace('E+', 'E')).join(', ')}]`;
 const linspace = (a, b, n) => Array.from({ length: n }, (_, i) => a + ((b - a) * i) / (Math.max(n, 2) - 1));
 
+/** The engine itself broke, not a calculation (a trap, a stack overflow): its memory can't be trusted. */
+export const broken = (e) => e.constructor !== Error;
+
 export class Engine {
   constructor(module) {
     this.m = module;
@@ -88,6 +91,7 @@ export class Engine {
     try {
       return this.classroomCurve(expr, options, lo, hi);
     } catch (e) {
+      if (broken(e)) throw e;
       throw new Error(explain(expr, e.message, this.functionNames(), (f) => this.catalog().find((i) => i.kind === 'f' && i.name === f)?.signature));
     }
   }

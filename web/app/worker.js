@@ -1,6 +1,6 @@
 // The calculator engine on its own thread, one job at a time (src/gui/simple/worker.rs).
 import createQalc from './engine/qalc.mjs';
-import { Engine } from './engine-core.js';
+import { DEFAULT_OPTIONS, Engine, broken } from './engine-core.js';
 
 let engine;
 try {
@@ -9,8 +9,10 @@ try {
   if (!response.ok) throw new Error(`the server answered ${response.status}`);
   const wasmBinary = await response.arrayBuffer();
   engine = new Engine(await createQalc({ wasmBinary, onAbort: (what) => self.postMessage({ failed: String(what) }) }));
+  // the first call sets the engine up, so a failure there is a failed start too
+  engine.applyOptions(DEFAULT_OPTIONS);
 } catch (e) {
-  // a failed download of the engine: the page tries again with a new worker
+  // a failed download or setup of the engine: the page tries again with a new worker
   self.postMessage({ failed: e.message });
   throw e;
 }
@@ -19,6 +21,8 @@ self.onmessage = ({ data: { id, type, args } }) => {
     const reply = jobs[type](...args);
     self.postMessage({ id, ok: true, reply }, reply?.transfer ?? []);
   } catch (e) {
+    // uncaught, it reaches the page as the worker's error: a new engine takes over
+    if (broken(e)) throw e;
     self.postMessage({ id, ok: false, error: e.message });
   }
 };
@@ -33,6 +37,7 @@ const jobs = {
         transfer.push(c.x.buffer, c.y.buffer);
         return c;
       } catch (e) {
+        if (broken(e)) throw e;
         return { id, error: e.message };
       }
     });

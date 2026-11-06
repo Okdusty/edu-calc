@@ -123,6 +123,18 @@ for (const [name, type] of [['firefox', firefox], ['webkit', webkit]]) {
     assert.equal(await page.evaluate(() => window.app.table.g[4][1]), '9', 'table');
     assert.equal(await page.locator('.graph-row input[type="text"]').first().inputValue(), 'y = x² − 1', 'functions');
 
+    check('a broken engine is replaced');
+    await page.workers().at(-1).evaluate(() => {
+      const split = String.prototype.split;
+      String.prototype.split = function (...a) {
+        if (String(this).includes('20071')) throw new WebAssembly.RuntimeError('a test trap');
+        return split.apply(this, a);
+      };
+    });
+    await page.fill(entry, 'mean(X) + 20071');
+    await until(() => document.querySelector('.preview').textContent.includes('20073.5'));
+    await page.fill(entry, '');
+
     check('offline');
     await page.evaluate(() => navigator.serviceWorker.ready);
     // waitForFunction would take an async check's promise as already true

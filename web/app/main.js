@@ -43,6 +43,8 @@ const store = {
 
 // ---- the engine, one job at a time: a newer live job of the same kind replaces a queued one -----
 
+const signature = (type, args) => JSON.stringify([type, args]);
+
 class Engine {
   constructor(onRestart) {
     this.queue = [];
@@ -79,19 +81,39 @@ class Engine {
     };
     this.worker.onerror = (e) => {
       if (!this.ready) { if (!this.retrying) this.startFailed(e.message); return; }
-      // it stopped working later: its jobs fail, and a new one takes over
-      if (this.running) { const job = this.running; this.running = null; job.reject(new Error('The calculator stopped; it is restarting.')); }
-      clearTimeout(this.watchdog);
-      this.worker.terminate();
-      this.start();
-      this.onRestart();
+      console.warn('The calculator engine stopped:', e.message);
+      // it stopped working later: a new one takes over and gets the job once more, in case that was
+      // the browser; stopping the new one too is the job's own doing
+      const job = this.running;
+      this.running = null;
+      this.restart();
+      if (!job) return;
+      if (job.again) this.giveUp(job, 'This stopped the calculator. Try something simpler.');
+      else { job.again = true; this.queue.push(job); }
     };
+  }
+
+  /** A new worker in place of this one; the table (onRestart) reaches it before the waiting jobs. */
+  restart() {
+    clearTimeout(this.watchdog);
+    this.worker.terminate();
+    const waiting = this.queue.splice(0);
+    this.start();
+    this.onRestart();
+    this.queue.push(...waiting);
+  }
+
+  /** A restart recalculates the entry: what just stopped the engine must not get to stop it again. */
+  giveUp(job, message) {
+    this.fatal = { job: signature(job.type, job.args), message };
+    job.reject(new Error(message));
   }
 
   /** A failed download is usually a hiccup: try again, longer each time, then say so and keep trying. */
   startFailed(reason) {
     if (this.retrying) return;
     this.retrying = true;
+    console.warn('The calculator engine failed to start:', reason);
     clearTimeout(this.startTimer);
     this.worker.terminate();
     this.starts = (this.starts ?? 0) + 1;
@@ -107,6 +129,7 @@ class Engine {
   /** `key`: a later job with the same key replaces this one if it hasn't started (it resolves null). */
   run(type, args, key = null) {
     return new Promise((resolve, reject) => {
+      if (this.fatal && this.fatal.job === signature(type, args)) { reject(new Error(this.fatal.message)); return; }
       if (key) {
         const old = this.queue.findIndex((j) => j.key === key);
         if (old >= 0) { this.queue[old].resolve(null); this.queue.splice(old, 1); }
@@ -123,11 +146,9 @@ class Engine {
     this.worker.postMessage({ id: job.id, type: job.type, args: job.args });
     // the engine times itself out; this is for a calculation that ignores that
     this.watchdog = setTimeout(() => {
-      this.worker.terminate();
       this.running = null;
-      job.reject(new Error('This takes too long to calculate. Try something simpler.'));
-      this.start();
-      this.onRestart();
+      this.restart();
+      this.giveUp(job, 'This takes too long to calculate. Try something simpler.');
     }, 20000);
   }
 }

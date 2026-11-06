@@ -42,14 +42,19 @@ const settled = async () => {
 };
 
 let failed = 0;
-for (const [name, type, rounds] of [['chromium', chromium, [0, 20, ...[1, 2, 3].flatMap(() => [30, 35, 40, 45, 50, 55, 60, 65, 70]), 75, 80, 90, 100, 150, 200, 300, 400, 600, 800, 1200, 2000, 3000, 5000]], ['firefox', firefox, [0, 100, 400, 1500]], ['webkit', webkit, [0, 100, 400, 1500]]]) {
+let trouble = 0;
+for (const [name, type, rounds] of [['chromium', chromium, [0, 20, ...[1, 2, 3].flatMap(() => [30, 35, 40, 45, 50, 55, 60, 65, 70]), 75, 80, 90, 100, 150, 200, 300, 400, 600, 800, 1200, 2000, 3000, 5000]], ['firefox', firefox, [0, 100, 400, 1500]], ['webkit', webkit, [0, 0, 0, 0, 0, 0, 0, 0, 100, 100, 400, 1500]]]) {
   const browser = await type.launch();
   for (const delay of rounds) {
     const site = await serve();
     const context = await browser.newContext();
     const page = await context.newPage();
     const log = [];
-    page.on('console', (m) => log.push(`console ${m.type()}: ${m.text().slice(0, 160)}`));
+    page.on('console', (m) => {
+      log.push(`console ${m.type()}: ${m.text().slice(0, 160)}`);
+      // recovered from, but worth knowing how often
+      if (m.text().includes('calculator engine')) { trouble++; console.log(`${name} +${delay} ms: ${m.text().slice(0, 240)}`); }
+    });
     page.on('pageerror', (e) => log.push(`pageerror: ${e.message.slice(0, 160)}`));
     page.on('requestfailed', (r) => log.push(`failed: ${r.url().split('/edu-calc/')[1]} ${r.failure()?.errorText}`));
     const start = Date.now();
@@ -105,5 +110,5 @@ for (const [name, type, rounds] of [['chromium', chromium, [0, 20, ...[1, 2, 3].
   }
   await browser.close();
 }
-console.log(failed ? `${failed} rounds failed` : 'every round opened');
+console.log(failed ? `${failed} rounds failed` : 'every round opened', `(the engine needed a new start ${trouble} times)`);
 process.exitCode = failed ? 1 : 0;

@@ -327,6 +327,38 @@ try {
   await tab('Data');
   await cell(2, 1).fill('3.9');
 
+  check('a broken engine: a new one takes over with the table; what keeps breaking it is refused');
+  await tab('Calculator');
+  // a trap inside the engine's worker, on a reply with this text in it
+  const trap = (mark) => {
+    const split = String.prototype.split;
+    String.prototype.split = function (...a) {
+      if (String(this).includes(mark)) throw new WebAssembly.RuntimeError('a test trap');
+      return split.apply(this, a);
+    };
+  };
+  let workers = 0;
+  const counted = () => { workers++; };
+  page.on('worker', counted);
+  await page.workers().at(-1).evaluate(trap, '20071');
+  await page.fill('.input-row input', 'mean(Y) + 20071');
+  await until(() => document.querySelector('.preview').textContent.includes('20078.05'));
+  assert.equal(workers, 1, 'one new engine, and it had the table');
+  workers = 0;
+  const armed = (w) => w.evaluate(trap, '31337').catch(() => {});
+  page.on('worker', armed);
+  await page.workers().at(-1).evaluate(trap, '31337');
+  await page.fill('.input-row input', '31337 + 1');
+  await until(() => document.querySelector('.message').textContent === 'This stopped the calculator. Try something simpler.');
+  await page.waitForTimeout(3000);
+  assert.equal(workers, 2, 'tried once more, then no restart loop');
+  page.off('worker', armed);
+  page.off('worker', counted);
+  await ready();
+  await page.fill('.input-row input', '6 × 7');
+  await previewIs('= 42');
+  await page.fill('.input-row input', '');
+
   check('data: paste, import csv and xlsx, export');
   await cell(1, 0).click();
   await page.evaluate(() => {
