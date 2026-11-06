@@ -706,8 +706,9 @@ try {
     server.closeAllConnections();
     await new Promise((r) => server.close(r));
     serverStopped = true;
-    assert.equal(await page.evaluate(() => fetch('sw.js?network', { cache: 'no-store' }).then(() => 'answered', () => 'gone')), 'answered', 'the service worker still answers');
-    await page.evaluate(() => fetch(new Request(`${location.origin}/edu-calc/not-in-the-copy`)).then(() => { throw new Error('the server is still up'); }, () => 'gone'));
+    // really gone, seen from outside the browser; only the offline copy can answer now
+    await assert.rejects(fetch(url), undefined, 'the server is still up');
+    assert.equal(await page.evaluate(() => fetch('keys.js').then((r) => r.status)), 200, 'the offline copy answers');
   } else {
     await context.setOffline(true);
     assert.equal(await page.evaluate(() => navigator.onLine), false);
