@@ -65,10 +65,35 @@ pub const GROUPS: &[(&str, &[(&str, &str, &str)])] = &[
     (
         "Statistics",
         &[
-            ("mean(□, □)", "Average of the values", "mean(2, 4, 9) = 5"),
-            ("median(□, □)", "Middle value", "median(3, 1, 7) = 3"),
-            ("max(□, □)", "Largest value", "max(3, 8, 5) = 8"),
-            ("min(□, □)", "Smallest value", "min(3, 8, 5) = 3"),
+            ("mean(□)", "Average. □ is a table column, mean(X), or a list", "mean([2, 4, 9]) = 5"),
+            ("median(□)", "Middle value", "median([3, 1, 7]) = 3"),
+            ("mode(□)", "Most frequent value", "mode([1, 2, 2, 3]) = 2"),
+            ("min(□)", "Smallest value", "min([3, 8, 5]) = 3"),
+            ("max(□)", "Largest value", "max([3, 8, 5]) = 8"),
+            ("range(□)", "Largest minus smallest", "range([3, 8, 5]) = 5"),
+            ("total(□)", "Sum of the values", "total([1, 2, 3]) = 6"),
+            ("dimension(□)", "How many values (n)", "dimension([4, 8, 1]) = 3"),
+            ("stdev(□)", "Standard deviation of a sample", "stdev([1, 3, 5]) = 2"),
+            ("stdevp(□)", "Standard deviation of a whole population", "stdevp([1, 3]) = 1"),
+            ("var(□)", "Variance of a sample", "var([1, 3, 5]) = 4"),
+            ("varp(□)", "Variance of a whole population", "varp([1, 3]) = 1"),
+            ("stderr(□)", "Standard error of the mean", "stderr([1, 3, 5]) ≈ 1.154700538"),
+            ("quartile(□, □)", "Quartile 1, 2 or 3: quartile(list, 1)", "quartile([1, 2, 3, 4, 5], 1) = 2"),
+            ("percentile(□, □)", "Value below a percentage of the list", "percentile([1, 2, 3, 4, 5], 50) = 3"),
+            ("iqr(□)", "Interquartile range: Q3 − Q1", "iqr([1, 2, 3, 4, 5]) = 2"),
+            ("geomean(□)", "Geometric mean", "geomean([1, 4]) = 2"),
+            ("harmmean(□)", "Harmonic mean", "harmmean([1, 4]) = 8/5"),
+        ],
+    ),
+    (
+        "Correlation and regression",
+        &[
+            ("pearson(□, □)", "Pearson's r: how straight the trend is, from −1 to 1", "pearson([1, 2, 3], [2, 4, 6]) = 1"),
+            ("pearson(□, □)^2", "r²: the share of the change in y the line explains", "pearson([1, 2, 3], [2, 4, 6])^2 = 1"),
+            ("slope(□, □)", "Slope m of the best-fit line y = mx + b", "slope([1, 2, 3], [2, 4, 6]) = 2"),
+            ("intercept(□, □)", "Intercept b of the best-fit line", "intercept([1, 2, 3], [3, 5, 7]) = 1"),
+            ("spearman(□, □)", "Spearman's rank correlation, for curved trends", "spearman([1, 2, 3], [1, 8, 27]) = 1"),
+            ("cov(□, □)", "Covariance of a whole population", "cov([1, 2, 3], [2, 4, 6]) = 4/3"),
         ],
     ),
     (
@@ -175,7 +200,10 @@ mod tests {
         for (topic, items) in GROUPS {
             for (template, _, example) in *items {
                 if *template != "x" && *template != "%" && *template != "°" {
-                    let ok = ["2", "1/2"].iter().any(|v| qalc::classroom_eval(&template.replace(SLOT, v), &o).is_ok());
+                    // a number, or a list then numbers
+                    let ok = ["2", "1/2"].iter().any(|v| qalc::classroom_eval(&template.replace(SLOT, v), &o).is_ok())
+                        || qalc::classroom_eval(&template.replace(SLOT, "[1, 2, 3]"), &o).is_ok()
+                        || qalc::classroom_eval(&template.replacen(SLOT, "[1, 2, 3]", 1).replace(SLOT, "1"), &o).is_ok();
                     assert!(ok, "{topic}: {template}");
                 }
                 let Some((input, want, exact)) = example.split_once(" = ").map(|(a, b)| (a, b, true)).or_else(|| example.split_once(" ≈ ").map(|(a, b)| (a, b, false))) else {

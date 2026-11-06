@@ -1,5 +1,6 @@
 // C ABI over libqalculate for src/qalc/mod.rs. One global Calculator; Rust serializes all calls.
 // Returned strings are malloc'd UTF-8, released with qs_free. No C++ exception leaves this file.
+#include <tuple>
 #include <libqalculate/qalculate.h>
 
 #include <algorithm>
@@ -74,6 +75,14 @@ static void init() {
         f->setArgumentDefinition(1, new Argument("Function", false, false));
         f->setArgumentDefinition(2, new Argument("Variable", false, false));
         f->setDefaultValue(2, "x");
+    }
+    // best-fit line of two lists: cov is the population covariance, so varp (var is the sample's)
+    for (auto [name, formula, title] : {std::tuple<const char *, const char *, const char *>
+             {"slope", "cov(\\x, \\y) / varp(\\x)", "Slope of the best-fit line"},
+             {"intercept", "mean(\\y) - cov(\\x, \\y) / varp(\\x) * mean(\\x)", "y-intercept of the best-fit line"}}) {
+        MathFunction *f = CALCULATOR->addFunction(new UserFunction("Statistics", name, formula, true, 2, title));
+        f->setArgumentDefinition(1, new Argument("X values", false, false));
+        f->setArgumentDefinition(2, new Argument("Y values", false, false));
     }
     // qalc's defaults (src/qalc.cc load_preferences)
     eo.approximation = APPROXIMATION_TRY_EXACT;
@@ -846,6 +855,16 @@ extern "C" char *qs_set_var(const char *name, const char *val) {
         return nullptr;
     } catch (...) {
         return failed("qalculate: internal error");
+    }
+}
+
+// Remove a variable qs_set_var made ("Temporary"); built-in names and anything else stay.
+extern "C" void qs_unset_var(const char *name) {
+    try {
+        init();
+        Variable *v = CALCULATOR->getActiveVariable(name);
+        if (v && v->isLocal() && v->category() == "Temporary") v->destroy();
+    } catch (...) {
     }
 }
 

@@ -27,7 +27,8 @@ pub const CSS: &str = "
 .simple-entry { font-size: 1.3em; min-height: 44px; }
 .simple-card { padding: 6px 10px; border-radius: 8px; background: alpha(currentColor, 0.05); }
 .simple-keypad button { min-height: 30px; }
-.simple-side button { padding-left: 8px; padding-right: 8px; }
+.simple-side button { padding: 0 8px; min-height: 24px; }
+.simple-stat { padding: 1px 12px 1px 0; }
 .simple-catalog row { padding: 6px 8px; }
 .simple-catalog .catalog-topic { font-weight: bold; margin-top: 8px; }
 .simple-catalog .catalog-name { font-weight: bold; font-size: 1.1em; }
@@ -35,7 +36,7 @@ pub const CSS: &str = "
 ";
 
 /// Function pages (5 x 4) behind the side column's page buttons: (name, button, keys); □ marks a slot.
-const PAGES: [(&str, &str, &[(&str, &str)]); 3] = [
+const PAGES: [(&str, &str, &[(&str, &str)]); 4] = [
     (
         "basic",
         "Basic",
@@ -66,6 +67,16 @@ const PAGES: [(&str, &str, &[(&str, &str)]); 3] = [
             ("sinh", "sinh(□)"), ("cosh", "cosh(□)"), ("tanh", "tanh(□)"), ("a/b", "□/□"), ("√", "√(□)"),
         ],
     ),
+    (
+        "stats",
+        "Stats",
+        &[
+            ("mean", "mean(□)"), ("median", "median(□)"), ("mode", "mode(□)"), ("sd", "stdev(□)"), ("var", "var(□)"),
+            ("min", "min(□)"), ("max", "max(□)"), ("range", "range(□)"), ("Σ", "total(□)"), ("n", "dimension(□)"),
+            ("quart", "quartile(□, □)"), ("%ile", "percentile(□, □)"), ("IQR", "iqr(□)"), ("SE", "stderr(□)"), ("cov", "cov(□, □)"),
+            ("r", "pearson(□, □)"), ("ρ", "spearman(□, □)"), ("slope", "slope(□, □)"), ("y-int", "intercept(□, □)"), (",", ","),
+        ],
+    ),
 ];
 /// Number pad, 6 x 4; Enter takes two columns.
 const NUMBERS: &[(&str, &str)] = &[
@@ -75,7 +86,7 @@ const NUMBERS: &[(&str, &str)] = &[
     ("0", "0"), (".", "."), ("=", "="), ("+", "+"), ("Enter", "@enter"),
 ];
 /// Number-pad keys a table cell has no use for: dimmed on the Data tab.
-const CALC_ONLY: &[&str] = &["÷", "×", "+", "=", "@ans", "@slot"];
+const CALC_ONLY: &[&str] = &["÷", "×", "+", "=", "@slot"];
 
 struct GraphRow {
     id: usize,
@@ -100,6 +111,14 @@ pub struct Simple {
     history_rows: RefCell<Vec<gtk::Widget>>,
     last_expr: RefCell<String>,
     last_answer: RefCell<String>,
+    /// the last answer as a table cell (Ans on the Data tab)
+    last_number: RefCell<String>,
+    /// the table's columns above the entry: tap one to use it
+    table_bar: gtk::FlowBox,
+    table_note: gtk::Label,
+    /// what the calculator was last given, and the names it took
+    shared: RefCell<model::TableColumns>,
+    shared_names: RefCell<Vec<String>>,
     graph_this: gtk::Button,
     options: RefCell<qalc::Options>,
     graph_rows: RefCell<Vec<Rc<GraphRow>>>,
@@ -112,8 +131,10 @@ pub struct Simple {
     chart: gtk::DropDown,
     xcol: gtk::DropDown,
     ycol: gtk::DropDown,
+    fit: gtk::DropDown,
     column_names: RefCell<Vec<String>>,
     stats: gtk::Label,
+    more_stats: gtk::Expander,
     selectors_busy: Cell<bool>,
     /// header's Functions catalog (not on the Data tab)
     functions: gtk::MenuButton,
@@ -213,6 +234,10 @@ impl Simple {
         input.append(&entry);
         input.append(&fraction);
         input.append(&graph_this);
+        let table_note = note("dim-label");
+        work.append(&table_note);
+        let table_bar = gtk::FlowBox::builder().selection_mode(gtk::SelectionMode::None).min_children_per_line(1).max_children_per_line(30).column_spacing(4).row_spacing(4).visible(false).build();
+        work.append(&table_bar);
         work.append(&input);
         stack.add_titled(&work, Some("Calculator"), "Calculator");
 
@@ -245,7 +270,10 @@ impl Simple {
         ycol.set_selected(1);
         let selectors = gtk::Box::builder().spacing(6).css_classes(["toolbar"]).build();
         selectors.append(&chart);
-        for (name, d) in [("x", &xcol), ("y", &ycol)] {
+        let fit = gtk::DropDown::from_strings(&model::FitKind::NAMES);
+        fit.set_selected(1);
+        fit.set_tooltip_text(Some("Curve through the points, with its equation and r²"));
+        for (name, d) in [("x", &xcol), ("y", &ycol), ("fit", &fit)] {
             let l = gtk::Label::builder().label(name).margin_start(6).css_classes(["dim-label"]).build();
             selectors.append(&l);
             selectors.append(d);
@@ -258,6 +286,8 @@ impl Simple {
         stats.set_margin_end(8);
         stats.set_margin_bottom(6);
         data_right.append(&stats);
+        let more_stats = gtk::Expander::builder().label("More statistics").margin_start(8).margin_end(8).margin_bottom(6).build();
+        data_right.append(&more_stats);
         let data_pane = gtk::Paned::builder()
             .orientation(gtk::Orientation::Horizontal)
             .start_child(&data.root)
@@ -315,6 +345,11 @@ impl Simple {
             history_rows: RefCell::new(vec![]),
             last_expr: RefCell::new(String::new()),
             last_answer: RefCell::new(String::new()),
+            last_number: RefCell::new(String::new()),
+            table_bar,
+            table_note,
+            shared: RefCell::default(),
+            shared_names: RefCell::default(),
             graph_this,
             options: RefCell::new(qalc::Options { angle: "deg".into(), ..Default::default() }),
             graph_rows: RefCell::new(vec![]),
@@ -327,8 +362,10 @@ impl Simple {
             chart,
             xcol,
             ycol,
+            fit,
             column_names: RefCell::new(vec!["X".into(), "Y".into()]),
             stats,
+            more_stats,
             selectors_busy: Cell::new(false),
             functions,
             keypad,
@@ -429,7 +466,7 @@ impl Simple {
                 s.queue_data();
             }
         });
-        for d in [&s.chart, &s.xcol, &s.ycol] {
+        for d in [&s.chart, &s.xcol, &s.ycol, &s.fit] {
             let weak = Rc::downgrade(&s);
             d.connect_selected_notify(move |_| {
                 if let Some(s) = weak.upgrade() {
@@ -597,6 +634,7 @@ impl Simple {
             "@clear" => keypad::Act::Clear,
             "@back" => keypad::Act::Back,
             "@enter" => keypad::Act::Enter,
+            "@ans" if self.tab.get() == SimpleTab::Data => keypad::Act::Insert(self.last_number.borrow().clone()),
             "@ans" => keypad::Act::Insert(format!("({})", self.last_answer.borrow())),
             "−" if self.tab.get() == SimpleTab::Data => keypad::Act::Insert("-".into()),
             _ => keypad::Act::Insert(text.into()),
@@ -783,6 +821,7 @@ impl Simple {
                             self.graph_this.set_sensitive(a.free_vars == ["x"]);
                         }
                         if commit {
+                            *self.last_number.borrow_mut() = model::answer_number(&a.result, &a.approx);
                             let saved = calc::Saved { expr: text.clone(), input: a.input, result: a.result.clone(), approx: a.approx };
                             self.history_card(&saved);
                             let mut history = calc::parse_history(&std::fs::read_to_string(calc::history_path()).unwrap_or_default());
@@ -838,7 +877,90 @@ impl Simple {
                 drop(fig);
                 self.graph.redraw();
             }
+            Reply::Shared { names } => {
+                *self.shared_names.borrow_mut() = names;
+                self.rebuild_table_bar();
+                // what's in the entry may use the columns that just changed
+                if !self.entry.text().trim().is_empty() {
+                    self.queue_calculation(false);
+                }
+            }
         }
+    }
+    /// Give the calculator the table's columns when they changed, or always with `force` (Advanced
+    /// may have redefined the names meanwhile).
+    pub fn share_table(&self, force: bool) {
+        let table = model::table_columns(&self.data.grid());
+        if !force && table == *self.shared.borrow() {
+            return;
+        }
+        let names = |t: &model::TableColumns| t.named.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>();
+        let now = names(&table);
+        let gone = names(&self.shared.borrow()).into_iter().filter(|n| !now.contains(n)).collect();
+        let _ = self.sender.send(Job::Share { cols: table.named.clone(), gone });
+        *self.shared.borrow_mut() = table;
+    }
+    /// The two columns the Data tab is charting, when the calculator has them; else its first two.
+    fn table_pair(&self) -> Option<(String, String)> {
+        let (names, taken) = (self.column_names.borrow(), self.shared_names.borrow());
+        let pick = |i: Option<u32>| i.and_then(|i| names.get(i as usize)).map(|n| n.trim().to_string()).filter(|n| taken.contains(n));
+        let y = pick(Some(self.ycol.selected())).or_else(|| taken.get(1).cloned())?;
+        let x = pick(self.xcol.selected().checked_sub(1)).filter(|x| *x != y).or_else(|| taken.iter().find(|n| **n != y).cloned())?;
+        Some((x, y))
+    }
+    fn rebuild_table_bar(self: &Rc<Self>) {
+        self.table_bar.remove_all();
+        let taken = self.shared_names.borrow().clone();
+        let add = |text: &str, tip: &str, f: Box<dyn Fn(&Rc<Self>)>| {
+            let b = gtk::Button::builder().label(text).tooltip_text(tip).focus_on_click(false).build();
+            let weak = Rc::downgrade(self);
+            b.connect_clicked(move |_| {
+                if let Some(s) = weak.upgrade() {
+                    f(&s);
+                }
+            });
+            self.table_bar.append(&b);
+        };
+        if !taken.is_empty() {
+            let caption = gtk::Label::builder().label("Table").css_classes(["dim-label"]).build();
+            self.table_bar.append(&caption);
+        }
+        for name in &taken {
+            let n = name.clone();
+            add(name, "This table column. For example: mean(X)", Box::new(move |s| s.press(&n)));
+        }
+        if taken.len() > 1 {
+            type Pick = fn(&str, &str) -> String;
+            let tools: [(&str, &str, Pick); 3] = [
+                ("Correlation r", "Pearson's r of the charted columns", |x, y| format!("pearson({x}, {y})")),
+                ("Slope", "Slope m of their best-fit line y = mx + b", |x, y| format!("slope({x}, {y})")),
+                ("Intercept", "Intercept b of their best-fit line", |x, y| format!("intercept({x}, {y})")),
+            ];
+            for (text, tip, make) in tools {
+                add(text, tip, Box::new(move |s| {
+                    if let Some((x, y)) = s.table_pair() {
+                        s.press(&make(&x, &y));
+                    }
+                }));
+            }
+        }
+        let mut child = self.table_bar.first_child();
+        while let Some(w) = child {
+            w.set_focusable(false);
+            child = w.next_sibling();
+        }
+        self.table_bar.set_visible(!taken.is_empty());
+        let shared = self.shared.borrow();
+        let mut unusable = shared.unnamed.clone();
+        unusable.extend(shared.named.iter().map(|(n, _)| n).filter(|n| !taken.contains(n)).cloned());
+        let mut notes = vec![];
+        if !unusable.is_empty() {
+            notes.push(format!("Not available here: {}. Name a column with one word that isn't a unit or constant.", unusable.join(", ")));
+        }
+        if shared.misaligned {
+            notes.push("Blank cells are skipped, so the columns no longer line up row by row. Fill them before using r or the slope here.".to_string());
+        }
+        self.table_note.set_text(&notes.join("\n"));
     }
     fn history_card(self: &Rc<Self>, saved: &calc::Saved) {
         let body = column(0);
@@ -903,13 +1025,30 @@ impl Simple {
             *self.column_names.borrow_mut() = names;
             self.selectors_busy.set(false);
         }
+        self.share_table(false);
         let chart = model::Chart::from_index(self.chart.selected());
-        self.xcol.set_sensitive(chart != model::Chart::Histogram);
+        let paired = chart != model::Chart::Histogram;
+        self.xcol.set_sensitive(paired);
+        self.fit.set_sensitive(paired);
         let x = self.xcol.selected().checked_sub(1).map(|i| i as usize);
-        let (fig, stats, skipped) = model::data_chart(&grid, chart, x, self.ycol.selected() as usize);
+        let y = self.ycol.selected() as usize;
+        let (mut fig, stats, skipped) = model::data_chart(&grid, chart, x, y);
+        let points = if paired { model::pairs(&grid, x, y) } else { vec![] };
+        let kind = if paired { model::FitKind::from_index(self.fit.selected()) } else { model::FitKind::None };
+        let fitted = (kind != model::FitKind::None).then(|| model::fit(&points, kind));
+        if let Some(Ok(f)) = &fitted {
+            let lo = points.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+            let hi = points.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+            let xs: Vec<f64> = (0..=200).map(|i| lo + (hi - lo) * i as f64 / 200.0).collect();
+            let ys = xs.iter().map(|x| f.at(*x)).collect();
+            let mut curve = plot::Series::new(plot::Data::Line { x: xs, y: ys });
+            curve.color = Some([205, 66, 64]);
+            curve.width = 2.5;
+            fig.axes().series.push(curve);
+        }
         *self.data_board.figure.borrow_mut() = fig;
         self.data_board.redraw();
-        let fmt = |v: Option<f64>| v.filter(|v| v.is_finite()).map(plot::cursor::num);
+        let fmt = |v: Option<f64>| v.filter(|v| v.is_finite()).map(|v| plot::cursor::num(v).replace('-', "−"));
         let mut lines = vec![];
         let figures: Vec<String> = [("n", Some(stats.count as f64)), ("mean", stats.mean), ("median", stats.median), ("sd", stats.std), ("min", stats.min), ("max", stats.max)]
             .into_iter()
@@ -918,16 +1057,96 @@ impl Simple {
         if stats.count > 0 {
             lines.push(figures.join("   "));
         }
-        if chart != model::Chart::Histogram
-            && let Ok((m, b)) = model::linear_regression(&grid, x, self.ycol.selected() as usize)
-        {
-            lines.push(format!("Best-fit line: y = {}x {} {}", fmt(Some(m)).unwrap_or_default(), if b < 0.0 { "−" } else { "+" }, fmt(Some(b.abs())).unwrap_or_default()));
+        let r = model::pearson(&points);
+        let shown = |name: &str, v: Option<f64>| fmt(v).map_or(String::new(), |v| format!("   {name} = {v}"));
+        let name = model::FitKind::NAMES[self.fit.selected().min(5) as usize];
+        match &fitted {
+            Some(Ok(f)) if kind == model::FitKind::Linear => lines.push(format!("Best-fit line: {}{}{}", f.equation(), shown("r", r), shown("r²", f.r2))),
+            Some(Ok(f)) => lines.push(format!("{name} fit: {}{}{}", f.equation(), shown("r²", f.r2), shown("Pearson r", r))),
+            // a table still being filled isn't a problem for the default line
+            Some(Err(e)) if points.len() >= 2 || (kind != model::FitKind::Linear && !points.is_empty()) => lines.push(format!("No {} fit: {e}", name.to_lowercase())),
+            None if paired && r.is_some() => lines.push(format!("Pearson r = {}", fmt(r).unwrap_or_default())),
+            _ => {}
         }
         let skipped = skipped.max(stats.skipped);
         if skipped > 0 {
             lines.push(format!("{skipped} row{} skipped: not a number", if skipped == 1 { "" } else { "s" }));
         }
         self.stats.set_text(&lines.join("\n"));
+        self.show_more_stats(&stats, &points, self.ycol.selected());
+    }
+    /// The Expander's cards: the y column, then x and y together. They wrap to the pane's width.
+    fn show_more_stats(&self, s: &model::Summary, points: &[(f64, f64)], ycol: u32) {
+        let fmt = |v: Option<f64>| v.filter(|v| v.is_finite()).map_or("–".to_string(), |v| plot::cursor::num(v).replace('-', "−"));
+        let section = |title: String, items: Vec<(&str, String)>| {
+            let body = column(2);
+            let t = label(&title);
+            t.add_css_class("heading");
+            t.set_margin_top(4);
+            body.append(&t);
+            let flow = gtk::FlowBox::builder().selection_mode(gtk::SelectionMode::None).min_children_per_line(2).max_children_per_line(8).homogeneous(true).build();
+            for (name, value) in items {
+                let card = column(0);
+                card.add_css_class("simple-stat");
+                let n = label(name);
+                n.add_css_class("dim-label");
+                n.add_css_class("caption");
+                let v = label(&value);
+                v.set_selectable(true);
+                card.append(&n);
+                card.append(&v);
+                flow.append(&card);
+                if let Some(child) = flow.last_child() {
+                    child.set_focusable(false);
+                }
+            }
+            body.append(&flow);
+            body
+        };
+        let both = |a: Option<f64>, b: Option<f64>| a.zip(b);
+        let modes = if s.modes.is_empty() { "none repeats".to_string() } else { s.modes.iter().map(|m| fmt(Some(*m))).collect::<Vec<_>>().join(", ") };
+        let name = self.column_names.borrow().get(ycol as usize).cloned().unwrap_or_else(|| "y".into());
+        let body = column(4);
+        body.append(&section(format!("Column {name}"), vec![
+            ("Count n", s.count.to_string()),
+            ("Sum", fmt(s.sum)),
+            ("Mean", fmt(s.mean)),
+            ("Median", fmt(s.median)),
+            ("Mode", modes),
+            ("Minimum", fmt(s.min)),
+            ("Q1", fmt(s.q1)),
+            ("Q3", fmt(s.q3)),
+            ("Maximum", fmt(s.max)),
+            ("Range", fmt(both(s.max, s.min).map(|(a, b)| a - b))),
+            ("IQR", fmt(both(s.q3, s.q1).map(|(a, b)| a - b))),
+            ("SD, sample", fmt(s.std)),
+            ("SD, population", fmt(s.pop_std)),
+            ("Variance, sample", fmt(s.std.map(|v| v * v))),
+            ("Variance, population", fmt(s.pop_std.map(|v| v * v))),
+            ("Standard error", fmt(s.std.map(|v| v / (s.count as f64).sqrt()))),
+        ]));
+        if points.len() >= 2 {
+            let r = model::pearson(points);
+            let line = model::least_squares(points).ok();
+            let n = points.len() as f64;
+            let cov = model::covariance(points);
+            body.append(&section("x and y together".to_string(), vec![
+                ("Complete rows", points.len().to_string()),
+                ("Pearson r", fmt(r)),
+                ("r²", fmt(r.map(|r| r * r))),
+                ("Spearman ρ", fmt(model::spearman(points))),
+                ("Slope m", fmt(line.map(|l| l.0))),
+                ("Intercept b", fmt(line.map(|l| l.1))),
+                ("Covariance, sample", fmt(cov.map(|c| c * n / (n - 1.0)))),
+                ("Covariance, population", fmt(cov)),
+            ]));
+        }
+        let hint = label("In the Calculator: mean(X), pearson(X, Y), slope(X, Y)… see Functions.");
+        hint.add_css_class("dim-label");
+        hint.add_css_class("caption");
+        hint.set_margin_top(4);
+        body.append(&hint);
+        self.more_stats.set_child(Some(&body));
     }
 }
 
@@ -941,8 +1160,9 @@ mod tests {
         for (page, _, keys) in PAGES {
             assert_eq!(keys.len(), 20, "{page}: a full 5 x 4 page");
             for (face, t) in keys.iter().filter(|(_, t)| t.contains(keypad::SLOT)) {
-                // some functions want integers, inverse trig wants |a| <= 1
-                let ok = ["2", "1/2"].iter().any(|v| qalc::classroom_eval(&t.replace(keypad::SLOT, v), &o).is_ok());
+                // some functions want integers, inverse trig wants |a| <= 1, statistics want lists
+                let ok = ["2", "1/2", "[1, 2, 3]"].iter().any(|v| qalc::classroom_eval(&t.replace(keypad::SLOT, v), &o).is_ok())
+                    || qalc::classroom_eval(&t.replacen(keypad::SLOT, "[1, 2, 3]", 1).replace(keypad::SLOT, "1"), &o).is_ok();
                 assert!(ok, "{page} key {face}: {t}");
             }
         }
@@ -975,6 +1195,7 @@ mod tests {
 
     fn screenshot(ui: &Ui, name: &str) {
         let image = gtk::WidgetPaintable::new(Some(&ui.win));
+        pump_until(|| ui.win.is_mapped());
         ui.win.queue_draw();
         settle();
         let snapshot = gtk::Snapshot::new();
@@ -1115,8 +1336,7 @@ mod tests {
         }
         let chart_height = s.data_board.area.height();
         s.toggle_keypad();
-        settle();
-        assert!(s.data_board.area.height() > chart_height);
+        pump_until(|| s.data_board.area.height() > chart_height);
         s.toggle_keypad();
         s.select(SimpleTab::Calculator);
         assert!(s.function_keys.is_visible());
@@ -1192,6 +1412,53 @@ mod tests {
         let grid = s.data.grid();
         assert_eq!((&grid[0][..2], &grid[1][..2], &grid[2][..2]), (&["X", "Y"].map(String::from)[..], &["4", "5"].map(String::from)[..], &["6", "7"].map(String::from)[..]));
         assert!(s.stats.text().contains("n = 2"), "{}", s.stats.text());
+        // one set of numbers, read from both tabs
+        super::super::show_simple(&ui, false);
+        settle();
+        super::super::eval_octave(&ui, "data = [1 2.1; 2 3.9; 3 6.2; 4 7.8; 5 10.1; 6 12.2];").unwrap();
+        super::super::show_simple(&ui, true);
+        settle();
+        s.chart.set_selected(0);
+        s.xcol.set_selected(1);
+        s.ycol.set_selected(1);
+        settle();
+        let points = model::pairs(&s.data.grid(), Some(0), 1);
+        assert_eq!(points.len(), 6);
+        let r = model::pearson(&points).unwrap();
+        assert!(s.stats.text().contains("Best-fit line: y = 2.02"), "{}", s.stats.text());
+        assert!(s.stats.text().contains(&format!("r = {}", plot::cursor::num(r))), "{}", s.stats.text());
+        s.more_stats.set_expanded(true);
+        settle();
+        screenshot(&ui, "simple-data-statistics");
+        s.more_stats.set_expanded(false);
+        s.fit.set_selected(2);
+        settle();
+        assert!(s.stats.text().contains("Quadratic fit: y = "), "{}", s.stats.text());
+        assert_eq!(s.data_board.figure.borrow().axes[0].series.len(), 2, "points and the curve");
+        s.fit.set_selected(0);
+        settle();
+        assert!(s.stats.text().contains("Pearson r = "), "{}", s.stats.text());
+        assert_eq!(s.data_board.figure.borrow().axes[0].series.len(), 1);
+        s.fit.set_selected(1);
+        settle();
+        s.select(SimpleTab::Calculator);
+        pump_until(|| *s.shared_names.borrow() == ["X", "Y"]);
+        assert!(s.table_bar.is_visible() && !s.table_note.is_visible());
+        // the strip's r button, then the same value as the table's
+        let tool = std::iter::successors(s.table_bar.first_child(), |w| w.next_sibling())
+            .filter_map(|c| c.first_child().and_downcast::<gtk::Button>())
+            .find(|b| b.label().as_deref() == Some("Correlation r"))
+            .expect("the strip's r button");
+        tool.emit_clicked();
+        assert_eq!(s.entry.text(), "pearson(X, Y)");
+        settle();
+        screenshot(&ui, "simple-calculator-table");
+        s.press("@enter");
+        pump_until(|| *s.last_expr.borrow() == "pearson(X, Y)");
+        let number = s.last_number.borrow().parse::<f64>().unwrap();
+        assert!((number - r).abs() < 1e-8, "{number} vs {r}");
+        s.select(SimpleTab::Data);
+        settle();
         s.data.root.activate_action("ed.del-col", None).unwrap();
         settle();
         assert_eq!(s.data.grid()[0].len(), 1);
@@ -1211,6 +1478,13 @@ mod tests {
         settle();
         screenshot(&ui, "simple-data-light");
         assert_eq!(s.data.grid(), table);
+        // Ans puts the calculator's last answer into the selected cell
+        *s.last_number.borrow_mut() = "1.25".into();
+        s.select(SimpleTab::Data);
+        settle();
+        s.press("@ans");
+        settle();
+        assert!(s.data.grid().iter().flatten().any(|c| c.contains("1.25")), "{:?}", s.data.grid());
         assert_eq!(s.graph_rows.borrow().len(), 2);
         s.toggle_keypad();
         assert!(!s.keypad.is_visible());

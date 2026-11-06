@@ -16,6 +16,7 @@ unsafe extern "C" {
     fn qs_calc(expr: *const c_char, msecs: c_int, mode: c_int) -> *mut c_char;
     fn qs_pretty(expr: *const c_char) -> *mut c_char;
     fn qs_set_var(name: *const c_char, val: *const c_char) -> *mut c_char;
+    fn qs_unset_var(name: *const c_char);
     fn qs_sample(
         expr: *const c_char,
         xvar: *const c_char,
@@ -457,6 +458,12 @@ fn raw_set(name: &str, lit: &str) -> Result<(), String> {
     take(unsafe { qs_set_var(n.as_ptr(), l.as_ptr()) }).map_or(Ok(()), Err)
 }
 
+fn raw_unset(name: &str) {
+    if let Ok(n) = cstr(name) {
+        unsafe { qs_unset_var(n.as_ptr()) }
+    }
+}
+
 /// expr at (xs[i], ys[i]); yvar "" = one variable (ys unused but read, pass xs).
 fn raw_sample(expr: &str, xvar: &str, yvar: &str, xs: &[f64], ys: &[f64]) -> Result<Vec<f64>, String> {
     let (e, x, y) = (cstr(expr)?, cstr(xvar)?, cstr(yvar)?);
@@ -637,6 +644,32 @@ pub fn set_var(name: &str, v: &Value) -> Result<(), String> {
     let m = numeric(v).ok_or_else(|| format!("{name}: only non-empty numeric values go to the calculator"))?;
     let _g = lock();
     raw_set(name, &literal(&m))
+}
+
+/// The Simple table's columns as calculator row vectors, so `mean(X)` or `pearson(X, Y)` works in
+/// the calculator. `gone`: names shared before that are no columns any more (they're removed).
+/// Returns the names the calculator took: built-in names (units, constants, x/y/z) are refused.
+/// Recorded like pushed workspace variables, so Advanced re-pushes an Octave variable of the
+/// same name when it differs.
+pub fn share_columns(cols: &[(String, Vec<f64>)], gone: &[String]) -> Vec<String> {
+    let mut pushed = lock();
+    for name in gone {
+        raw_unset(name);
+        pushed.remove(name);
+    }
+    let mut taken = vec![];
+    for (name, values) in cols {
+        let Some(m) = numeric(&Value::Num(Matrix::new(1, values.len(), values.clone()))).filter(|m| m.len() <= 10_000) else {
+            raw_unset(name);
+            pushed.remove(name);
+            continue;
+        };
+        if raw_set(name, &literal(&m)).is_ok() {
+            taken.push(name.clone());
+        }
+        pushed.insert(name.clone(), m);
+    }
+    taken
 }
 
 /// Numeric workspace variables that changed since their last push.
@@ -868,6 +901,25 @@ fn synced<T>(it: &Interp, expr: &str, f: impl FnOnce(&str) -> Result<T, String>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn table_columns_reach_the_calculator() {
+        let o = Options::default();
+        let cols = [("X".to_string(), vec![1., 2., 3., 4.]), ("Y".to_string(), vec![2., 4., 5., 9.]), ("m".to_string(), vec![1.])];
+        // X and Y are the table's default names; m is the metre and stays it
+        assert_eq!(share_columns(&cols, &[]), ["X", "Y"]);
+        assert_eq!(classroom_eval("mean(X)", &o).unwrap().result, "5/2");
+        assert_eq!(classroom_eval("pearson(X, Y)", &o).unwrap().approx, "0.9647638212");
+        // the same line the Data tab draws (cov is the population's, var the sample's)
+        assert_eq!(classroom_eval("slope(X, Y)", &o).unwrap().result, "11/5");
+        assert_eq!(classroom_eval("intercept(X, Y)", &o).unwrap().result, "−1/2");
+        assert_eq!(classroom_eval("cov(X, Y) / varp(X)", &o).unwrap().result, "11/5");
+        // a renamed or deleted column is forgotten
+        assert_eq!(share_columns(&cols[..1], &["Y".into(), "m".into()]), ["X"]);
+        assert!(classroom_eval("mean(Y)", &o).is_err());
+        share_columns(&[], &["X".into()]);
+        assert!(classroom_eval("mean(X)", &o).is_err());
+    }
 
     #[test]
     fn classroom_options_and_curves() {

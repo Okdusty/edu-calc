@@ -1035,7 +1035,11 @@ fn show_simple(ui: &Rc<Ui>, simple: bool) {
     ui.headers.set_visible_child_name(name);
     if simple {
         ui.win.set_title(Some("EduCalc"));
-        if let Some(s) = ui.simple.borrow().as_ref() { s.focus(); }
+        if let Some(s) = ui.simple.borrow().as_ref() {
+            // Octave may have redefined X, Y ... in the calculator meanwhile
+            s.share_table(true);
+            s.focus();
+        }
     } else {
         update_title(ui); apply_layout(ui); focus_mode(ui);
     }

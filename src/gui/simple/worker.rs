@@ -9,11 +9,15 @@ use std::sync::{
 pub enum Job {
     Calculate { id: u64, text: String, options: Options, commit: bool },
     Graph { id: u64, rows: Vec<(usize, String)>, options: Options, range: (f64, f64) },
+    /// the table's columns as calculator variables; `gone` are no columns any more
+    Share { cols: Vec<(String, Vec<f64>)>, gone: Vec<String> },
 }
 pub type Curve = Result<(Vec<f64>, Vec<f64>), String>;
 pub enum Reply {
     Calculate { id: u64, text: String, commit: bool, answer: Result<ClassroomAnswer, String> },
     Graph { id: u64, rows: Vec<(usize, Curve)> },
+    /// the column names the calculator took
+    Shared { names: Vec<String> },
 }
 
 pub fn start(calc: Arc<AtomicU64>, graph: Arc<AtomicU64>) -> (mpsc::Sender<Job>, mpsc::Receiver<Reply>) {
@@ -44,6 +48,7 @@ pub fn start(calc: Arc<AtomicU64>, graph: Arc<AtomicU64>) -> (mpsc::Sender<Job>,
                     }
                     Reply::Graph { id, rows: result }
                 }
+                Job::Share { cols, gone } => Reply::Shared { names: qalc::share_columns(&cols, &gone) },
             };
             if out.send(reply).is_err() {
                 break;

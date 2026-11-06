@@ -1,6 +1,6 @@
 //! Classroom input and chart transformations, independent of GTK widgets.
 use crate::builtins::io;
-use crate::plot::{Data, Figure, LineStyle, Marker, Series};
+use crate::plot::{Data, Figure, LineStyle, Marker, Series, cursor};
 use crate::qalc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,22 +199,248 @@ pub struct Summary {
     pub min: Option<f64>,
     pub max: Option<f64>,
     pub std: Option<f64>,
+    pub sum: Option<f64>,
+    /// quartiles by linear interpolation, like the calculator's quartile() and Excel's QUARTILE.INC
+    pub q1: Option<f64>,
+    pub q3: Option<f64>,
+    /// the population's standard deviation; `std` is the sample's
+    pub pop_std: Option<f64>,
+    /// the most frequent values; empty when none repeats
+    pub modes: Vec<f64>,
 }
 
 fn number(s: &str) -> Option<f64> {
     io::to_num(s.trim(), true).filter(|n| n.is_finite())
 }
 
-/// Ordinary least squares over complete, finite X/Y pairs.
-pub fn linear_regression(grid: &[Vec<String>], xcol: Option<usize>, ycol: usize) -> Result<(f64, f64), &'static str> {
-    let pairs: Vec<_> = grid.iter().skip(1).enumerate().filter_map(|(i, row)| {
+/// The complete, finite X/Y pairs; no x column = the row number.
+pub fn pairs(grid: &[Vec<String>], xcol: Option<usize>, ycol: usize) -> Vec<(f64, f64)> {
+    grid.iter().skip(1).enumerate().filter_map(|(i, row)| {
         let x = match xcol {
             Some(c) => number(row.get(c)?),
             None => Some(i as f64 + 1.0),
         }?;
         let y = number(row.get(ycol)?)?;
         Some((x, y))
-    }).collect();
+    }).collect()
+}
+
+/// Pearson's r; None when either list doesn't vary. Scaled first, so large values don't overflow.
+pub fn pearson(pairs: &[(f64, f64)]) -> Option<f64> {
+    let n = pairs.len() as f64;
+    let (mx, my) = (pairs.iter().map(|p| p.0 / n).sum::<f64>(), pairs.iter().map(|p| p.1 / n).sum::<f64>());
+    let (sx, sy) = pairs.iter().fold((0f64, 0f64), |(a, b), p| (a.max((p.0 - mx).abs()), b.max((p.1 - my).abs())));
+    if pairs.len() < 2 || sx == 0.0 || sy == 0.0 {
+        return None;
+    }
+    let sum = |f: &dyn Fn(&(f64, f64)) -> f64| pairs.iter().map(f).sum::<f64>();
+    let xy = sum(&|p| (p.0 - mx) / sx * ((p.1 - my) / sy));
+    let (xx, yy) = (sum(&|p| ((p.0 - mx) / sx).powi(2)), sum(&|p| ((p.1 - my) / sy).powi(2)));
+    Some((xy / (xx * yy).sqrt()).clamp(-1.0, 1.0)).filter(|r| r.is_finite())
+}
+
+/// Ranks from 1, ties sharing their average.
+fn ranks(v: &[f64]) -> Vec<f64> {
+    let mut order: Vec<usize> = (0..v.len()).collect();
+    order.sort_by(|a, b| v[*a].total_cmp(&v[*b]));
+    let mut out = vec![0.0; v.len()];
+    let mut i = 0;
+    while i < order.len() {
+        let j = (i..order.len()).take_while(|k| v[order[*k]] == v[order[i]]).last().unwrap_or(i);
+        for k in i..=j {
+            out[order[k]] = (i + j) as f64 / 2.0 + 1.0;
+        }
+        i = j + 1;
+    }
+    out
+}
+
+/// Spearman's rank correlation: Pearson's r of the ranks.
+pub fn spearman(pairs: &[(f64, f64)]) -> Option<f64> {
+    let (x, y): (Vec<f64>, Vec<f64>) = pairs.iter().copied().unzip();
+    pearson(&ranks(&x).into_iter().zip(ranks(&y)).collect::<Vec<_>>())
+}
+
+/// The population's covariance, like the calculator's cov(); the sample's is n / (n − 1) of it.
+pub fn covariance(pairs: &[(f64, f64)]) -> Option<f64> {
+    let n = pairs.len() as f64;
+    let (mx, my) = (pairs.iter().map(|p| p.0 / n).sum::<f64>(), pairs.iter().map(|p| p.1 / n).sum::<f64>());
+    (!pairs.is_empty()).then(|| pairs.iter().map(|p| (p.0 - mx) * (p.1 - my) / n).sum())
+}
+
+/// Curve through a table's points, by the Data tab's Fit menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FitKind {
+    None,
+    Linear,
+    Quadratic,
+    Exponential,
+    Power,
+    Logarithmic,
+}
+impl FitKind {
+    pub const NAMES: [&str; 6] = ["No fit", "Linear", "Quadratic", "Exponential", "Power", "Logarithmic"];
+    pub fn from_index(i: u32) -> Self {
+        match i {
+            0 => Self::None,
+            2 => Self::Quadratic,
+            3 => Self::Exponential,
+            4 => Self::Power,
+            5 => Self::Logarithmic,
+            _ => Self::Linear,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fit {
+    kind: FitKind,
+    /// Linear: m, b. Quadratic: a, b, c. Exponential and Power: a, b. Logarithmic: a, b.
+    coef: Vec<f64>,
+    /// 1 - SSres / SStot in y itself, also for the curves fitted through logarithms; None when y doesn't vary
+    pub r2: Option<f64>,
+}
+
+impl Fit {
+    pub fn at(&self, x: f64) -> f64 {
+        let c = &self.coef;
+        match self.kind {
+            FitKind::Linear => c[0] * x + c[1],
+            FitKind::Quadratic => (c[0] * x + c[1]) * x + c[2],
+            FitKind::Exponential => c[0] * (c[1] * x).exp(),
+            FitKind::Power => c[0] * x.powf(c[1]),
+            FitKind::Logarithmic => c[0] + c[1] * x.ln(),
+            FitKind::None => f64::NAN,
+        }
+    }
+
+    pub fn equation(&self) -> String {
+        let num = |v: f64| cursor::num(v).replace('-', "−");
+        // " + 2" or " − 2"
+        let then = |v: f64| format!(" {} {}", if v < 0.0 { "−" } else { "+" }, num(v.abs()));
+        let c = &self.coef;
+        match self.kind {
+            FitKind::Linear => format!("y = {}x{}", num(c[0]), then(c[1])),
+            FitKind::Quadratic => format!("y = {}x²{}x{}", num(c[0]), then(c[1]), then(c[2])),
+            FitKind::Exponential => format!("y = {}·e^({}x)", num(c[0]), num(c[1])),
+            FitKind::Power => format!("y = {}·x^{}", num(c[0]), num(c[1])),
+            FitKind::Logarithmic => format!("y = {}{}·ln(x)", num(c[0]), then(c[1])),
+            FitKind::None => String::new(),
+        }
+    }
+}
+
+/// Least squares of `kind` over the points; a reason when it doesn't apply. Exponential, power and
+/// logarithmic go through logarithms, so they refuse points those can't take instead of dropping them.
+pub fn fit(points: &[(f64, f64)], kind: FitKind) -> Result<Fit, String> {
+    let line = |p: &[(f64, f64)]| least_squares(p).map_err(String::from);
+    let need = if kind == FitKind::Quadratic { 3 } else { 2 };
+    if points.len() < need {
+        return Err(format!("it needs at least {need} complete rows"));
+    }
+    let positive = |ok: bool, what: &str| if ok { Ok(()) } else { Err(format!("every {what} must be above 0")) };
+    let coef = match kind {
+        FitKind::None => return Err("no fit picked".into()),
+        FitKind::Linear => {
+            let (m, b) = line(points)?;
+            vec![m, b]
+        }
+        FitKind::Quadratic => {
+            // in u = (x - mean) / spread, which keeps the normal equations well conditioned
+            let n = points.len() as f64;
+            let mx = points.iter().map(|p| p.0 / n).sum::<f64>();
+            let sx = points.iter().map(|p| (p.0 - mx).abs()).fold(0.0, f64::max);
+            let mut xs: Vec<f64> = points.iter().map(|p| p.0).collect();
+            xs.sort_by(f64::total_cmp);
+            xs.dedup();
+            if xs.len() < 3 {
+                return Err("it needs at least 3 different x values".into());
+            }
+            let mut a = nalgebra::Matrix3::zeros();
+            let mut v = nalgebra::Vector3::zeros();
+            for p in points {
+                let u = (p.0 - mx) / sx;
+                let row = nalgebra::Vector3::new(u * u, u, 1.0);
+                a += row * row.transpose();
+                v += row * p.1;
+            }
+            let s = a.lu().solve(&v).ok_or("the points don't determine a curve")?;
+            let (qa, qb) = (s[0] / (sx * sx), s[1] / sx);
+            vec![qa, qb - 2.0 * qa * mx, s[2] - qb * mx + qa * mx * mx]
+        }
+        FitKind::Exponential => {
+            positive(points.iter().all(|p| p.1 > 0.0), "y")?;
+            let (b, ln_a) = line(&points.iter().map(|p| (p.0, p.1.ln())).collect::<Vec<_>>())?;
+            vec![ln_a.exp(), b]
+        }
+        FitKind::Power => {
+            positive(points.iter().all(|p| p.0 > 0.0), "x")?;
+            positive(points.iter().all(|p| p.1 > 0.0), "y")?;
+            let (b, ln_a) = line(&points.iter().map(|p| (p.0.ln(), p.1.ln())).collect::<Vec<_>>())?;
+            vec![ln_a.exp(), b]
+        }
+        FitKind::Logarithmic => {
+            positive(points.iter().all(|p| p.0 > 0.0), "x")?;
+            let (b, a) = line(&points.iter().map(|p| (p.0.ln(), p.1)).collect::<Vec<_>>())?;
+            vec![a, b]
+        }
+    };
+    if coef.iter().any(|c| !c.is_finite()) {
+        return Err("the values exceed the numeric range".into());
+    }
+    let mut f = Fit { kind, coef, r2: None };
+    let n = points.len() as f64;
+    let my = points.iter().map(|p| p.1 / n).sum::<f64>();
+    let total = points.iter().map(|p| (p.1 - my).powi(2)).sum::<f64>();
+    let rest = points.iter().map(|p| (p.1 - f.at(p.0)).powi(2)).sum::<f64>();
+    f.r2 = (total > 0.0).then_some((1.0 - rest / total).max(0.0));
+    Ok(f)
+}
+
+/// A calculator answer as a table cell: its decimal form when it has one, with a plain minus.
+pub fn answer_number(result: &str, approx: &str) -> String {
+    (if approx.is_empty() { result } else { approx }).replace('−', "-")
+}
+
+/// The table's columns for the calculator.
+#[derive(Debug, Default, PartialEq)]
+pub struct TableColumns {
+    /// (name, its numeric cells) for columns with a valid name and some numbers
+    pub named: Vec<(String, Vec<f64>)>,
+    /// columns with numbers whose heading can't be a variable name
+    pub unnamed: Vec<String>,
+    /// a row has a number in one named column and not in another: skipping blanks shifts the lists
+    pub misaligned: bool,
+}
+
+/// What the calculator can see of the table. A first column of a repeated name wins.
+pub fn table_columns(grid: &[Vec<String>]) -> TableColumns {
+    let mut out = TableColumns::default();
+    let names = grid.first().cloned().unwrap_or_default();
+    let rows = grid.get(1..).unwrap_or_default();
+    let mut used = vec![];
+    for (c, name) in names.iter().enumerate() {
+        let values: Vec<f64> = rows.iter().filter_map(|r| r.get(c).and_then(|s| number(s))).collect();
+        if values.is_empty() {
+            continue;
+        }
+        let name = name.trim();
+        if name.is_empty() || io::valid_name(name) != name {
+            out.unnamed.push(if name.is_empty() { format!("Column {}", c + 1) } else { name.to_string() });
+        } else if out.named.iter().all(|(n, _)| n != name) {
+            out.named.push((name.to_string(), values));
+            used.push(c);
+        }
+    }
+    out.misaligned = rows.iter().any(|r| {
+        let filled = used.iter().filter(|c| r.get(**c).and_then(|s| number(s)).is_some()).count();
+        filled > 0 && filled < used.len()
+    });
+    out
+}
+
+/// Ordinary least squares over complete, finite X/Y pairs.
+pub fn least_squares(pairs: &[(f64, f64)]) -> Result<(f64, f64), &'static str> {
     if pairs.len() < 2 {
         return Err("need at least 2 valid X/Y pairs");
     }
@@ -239,16 +465,27 @@ pub fn linear_regression(grid: &[Vec<String>], xcol: Option<usize>, ycol: usize)
     Ok((slope, intercept))
 }
 
+/// Linear interpolation between the sorted values at fraction `p` of the way through.
+fn quantile(sorted: &[f64], p: f64) -> Option<f64> {
+    let h = (sorted.len().checked_sub(1)? as f64) * p;
+    let (lo, hi) = (h.floor() as usize, h.ceil() as usize);
+    Some(sorted[lo] + (sorted[hi] - sorted[lo]) * (h - lo as f64))
+}
+
 pub fn summary(values: impl Iterator<Item = Option<f64>>) -> Summary {
     let all: Vec<_> = values.collect();
     let mut v: Vec<_> = all.iter().flatten().copied().filter(|n| n.is_finite()).collect();
     v.sort_by(f64::total_cmp);
     let n = v.len();
     let mean = (n > 0).then(|| v.iter().map(|x| x / n as f64).sum::<f64>());
-    let std = (n > 1).then(|| {
+    let spread = |div: usize| {
         let mean = mean.unwrap();
-        (v.iter().map(|x| (x - mean).powi(2) / (n - 1) as f64).sum::<f64>()).sqrt()
-    });
+        (v.iter().map(|x| (x - mean).powi(2) / div as f64).sum::<f64>()).sqrt()
+    };
+    let std = (n > 1).then(|| spread(n - 1));
+    let runs = v.chunk_by(|a, b| a == b).map(|run| (run[0], run.len()));
+    let most = runs.clone().map(|(_, k)| k).max().unwrap_or(0);
+    let modes = if most > 1 { runs.filter(|(_, k)| *k == most).map(|(x, _)| x).collect() } else { vec![] };
     Summary {
         count: n,
         skipped: all.len() - n,
@@ -257,6 +494,11 @@ pub fn summary(values: impl Iterator<Item = Option<f64>>) -> Summary {
         min: v.first().copied(),
         max: v.last().copied(),
         std,
+        sum: (n > 0).then(|| v.iter().sum()),
+        q1: quantile(&v, 0.25),
+        q3: quantile(&v, 0.75),
+        pop_std: (n > 0).then(|| spread(n)),
+        modes,
     }
 }
 
@@ -367,6 +609,110 @@ mod tests {
         assert!(e.starts_with("log needs more values"), "{e}");
         assert!(explain("x", "plot sampling timed out").contains("too long"));
         assert_eq!(explain("x", "something else"), "something else");
+    }
+    fn linear_regression(grid: &[Vec<String>], xcol: Option<usize>, ycol: usize) -> Result<(f64, f64), &'static str> {
+        least_squares(&pairs(grid, xcol, ycol))
+    }
+    #[test]
+    fn answers_become_cells() {
+        assert_eq!(answer_number("5/4", "1.25"), "1.25");
+        assert_eq!(answer_number("−3", ""), "-3");
+        assert_eq!(io::to_num(&answer_number("−1/2", "−0.5"), true), Some(-0.5));
+    }
+    #[test]
+    fn more_statistics_match_the_calculator() {
+        let o = qalc::Options::default();
+        let values = [1.0, 2.0, 2.0, 3.0, 4.0, 7.0, 9.0, 12.0];
+        let s = summary(values.iter().map(|v| Some(*v)));
+        let list = "[1, 2, 2, 3, 4, 7, 9, 12]";
+        let calc = |e: String| {
+            let a = qalc::classroom_eval(&e, &o).unwrap();
+            let shown = if a.approx.is_empty() { a.result } else { a.approx };
+            shown.replace('−', "-").parse::<f64>().unwrap_or_else(|_| panic!("{e}: {shown}"))
+        };
+        for (got, f) in [(s.sum, "total"), (s.mean, "mean"), (s.median, "median"), (s.std, "stdev"), (s.pop_std, "stdevp")] {
+            assert!((got.unwrap() - calc(format!("{f}({list})"))).abs() < 1e-8, "{f}");
+        }
+        assert!((s.q1.unwrap() - calc(format!("quartile({list}, 1)"))).abs() < 1e-9);
+        assert!((s.q3.unwrap() - calc(format!("quartile({list}, 3)"))).abs() < 1e-9);
+        assert_eq!(s.modes, [2.0]);
+        assert_eq!(summary([Some(1.0), Some(2.0)].into_iter()).modes, Vec::<f64>::new());
+        assert_eq!(summary([Some(1.0), Some(1.0), Some(2.0), Some(2.0)].into_iter()).modes, [1.0, 2.0]);
+        assert_eq!(summary([None].into_iter()).sum, None);
+
+        let p = [(1.0, 2.0), (2.0, 4.0), (3.0, 5.0), (4.0, 9.0)];
+        let (x, y) = ("[1, 2, 3, 4]", "[2, 4, 5, 9]");
+        assert!((pearson(&p).unwrap() - calc(format!("pearson({x}, {y})"))).abs() < 1e-8);
+        assert!((spearman(&p).unwrap() - calc(format!("spearman({x}, {y})"))).abs() < 1e-9);
+        assert!((covariance(&p).unwrap() - calc(format!("cov({x}, {y})"))).abs() < 1e-9);
+        let line = fit(&p, FitKind::Linear).unwrap();
+        assert!((line.at(0.0) - calc(format!("intercept({x}, {y})"))).abs() < 1e-9);
+        assert!((line.at(1.0) - line.at(0.0) - calc(format!("slope({x}, {y})"))).abs() < 1e-9);
+    }
+    #[test]
+    fn correlation_edges() {
+        assert_eq!(pearson(&[(1.0, 2.0), (2.0, 4.0), (3.0, 6.0)]), Some(1.0));
+        assert_eq!(pearson(&[(1.0, 3.0), (2.0, 2.0), (3.0, 1.0)]), Some(-1.0));
+        assert_eq!(pearson(&[(1.0, 2.0), (1.0, 3.0)]), None, "x doesn't vary");
+        assert_eq!(pearson(&[(1.0, 2.0), (2.0, 2.0)]), None, "y doesn't vary");
+        assert_eq!(pearson(&[(1.0, 2.0)]), None);
+        assert_eq!(pearson(&[]), None);
+        assert_eq!(pearson(&[(1e200, 2e200), (2e200, 4e200), (3e200, 6e200)]), Some(1.0));
+        // monotonic but not straight, with a tie
+        assert_eq!(spearman(&[(1.0, 1.0), (2.0, 8.0), (3.0, 27.0), (4.0, 64.0)]), Some(1.0));
+        assert_eq!(ranks(&[10.0, 20.0, 20.0, 5.0]), [2.0, 3.5, 3.5, 1.0]);
+    }
+    #[test]
+    fn fits_recover_their_curves() {
+        let on = |f: &dyn Fn(f64) -> f64| (1..=6).map(|i| (i as f64, f(i as f64))).collect::<Vec<_>>();
+        for (kind, curve, eq) in [
+            (FitKind::Linear, on(&|x| 2.0 * x - 0.5), "y = 2x − 0.5"),
+            (FitKind::Quadratic, on(&|x| 0.5 * x * x - 3.0 * x + 1.0), "y = 0.5x² − 3x + 1"),
+            (FitKind::Exponential, on(&|x| 1.5 * (0.5 * x).exp()), "y = 1.5·e^(0.5x)"),
+            (FitKind::Power, on(&|x| 3.0 * x.powf(2.0)), "y = 3·x^2"),
+            (FitKind::Logarithmic, on(&|x| 2.0 + 4.0 * x.ln()), "y = 2 + 4·ln(x)"),
+        ] {
+            let f = fit(&curve, kind).unwrap();
+            assert_eq!(f.equation(), eq);
+            assert!((f.r2.unwrap() - 1.0).abs() < 1e-9, "{kind:?}");
+            for (x, y) in &curve {
+                assert!((f.at(*x) - y).abs() < 1e-6, "{kind:?} at {x}");
+            }
+        }
+        // a poor fit says so, in y itself
+        let r2 = fit(&[(1.0, 1.0), (2.0, 5.0), (3.0, 1.0), (4.0, 5.0)], FitKind::Linear).unwrap().r2.unwrap();
+        assert!(r2 < 0.3, "{r2}");
+        assert_eq!(fit(&[(1.0, 2.0), (2.0, 2.0)], FitKind::Linear).unwrap().r2, None);
+    }
+    #[test]
+    fn fits_say_why_not() {
+        let two = [(1.0, 1.0), (2.0, 2.0)];
+        assert!(fit(&two[..1], FitKind::Linear).unwrap_err().contains("at least 2"));
+        assert!(fit(&two, FitKind::Quadratic).unwrap_err().contains("at least 3"));
+        assert!(fit(&[(1.0, 1.0), (1.0, 2.0), (2.0, 3.0)], FitKind::Quadratic).unwrap_err().contains("3 different"));
+        assert!(fit(&[(1.0, 1.0), (1.0, 2.0)], FitKind::Linear).unwrap_err().contains("must differ"));
+        assert!(fit(&[(1.0, -1.0), (2.0, 2.0)], FitKind::Exponential).unwrap_err().contains("every y"));
+        assert!(fit(&[(0.0, 1.0), (2.0, 2.0)], FitKind::Power).unwrap_err().contains("every x"));
+        assert!(fit(&[(-1.0, 1.0), (2.0, 2.0)], FitKind::Logarithmic).unwrap_err().contains("every x"));
+    }
+    #[test]
+    fn table_columns_for_the_calculator() {
+        let grid = |rows: &[&[&str]]| rows.iter().map(|r| r.iter().map(|s| s.to_string()).collect::<Vec<_>>()).collect::<Vec<_>>();
+        let t = table_columns(&grid(&[&["X", "Y"], &["1", "2,5"], &["2", "4"], &["", ""]]));
+        assert_eq!(t.named, [("X".to_string(), vec![1.0, 2.0]), ("Y".to_string(), vec![2.5, 4.0])]);
+        assert!(!t.misaligned && t.unnamed.is_empty());
+        // only X has data so far: nothing to line up with
+        let t = table_columns(&grid(&[&["X", "Y"], &["1", ""], &["2", ""]]));
+        assert_eq!(t.named.len(), 1);
+        assert!(!t.misaligned);
+        // blanks on different rows would pair the wrong values
+        let t = table_columns(&grid(&[&["X", "Y"], &["1", "2"], &["", "3"], &["4", ""]]));
+        assert!(t.misaligned);
+        // text counts as blank; bad headings are reported, repeats ignored
+        let t = table_columns(&grid(&[&["Height (cm)", "", "A", "A"], &["1", "2", "3", "4"]]));
+        assert_eq!(t.unnamed, ["Height (cm)", "Column 2"]);
+        assert_eq!(t.named, [("A".to_string(), vec![3.0])]);
+        assert_eq!(table_columns(&[]), TableColumns::default());
     }
     #[test]
     fn statistics_and_missing_values() {
