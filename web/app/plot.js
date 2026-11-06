@@ -1,6 +1,6 @@
 // The chart: the desktop's src/plot/render.rs for the Simple tabs' 2D axes (layout, ticks, key points,
 // pins), drawn on any 2D context. SvgContext is one, for exports.
-import { MINUS, analyze, equalRanges, shown as showNum, ticks, grow } from './logic.js';
+import { MINUS, analyze, equalRanges, mathRuns, shown as showNum, ticks, grow } from './logic.js';
 
 const FONT = '"DejaVu Sans", "Segoe UI", "Liberation Sans", system-ui, sans-serif';
 export const THEMES = {
@@ -13,6 +13,9 @@ export const THEMES = {
     palette: [[77, 166, 255], [255, 120, 70], [250, 200, 60], [190, 120, 230], [140, 210, 80], [100, 220, 240], [240, 80, 110]],
   },
 };
+
+/** A theme with the ini's plot overrides, which apply to both light and dark. */
+export const themed = (name, overrides = {}) => ({ ...THEMES[name], ...overrides });
 
 const css = (c, a = 1) => (a === 1 ? `rgb(${c[0]},${c[1]},${c[2]})` : `rgba(${c[0]},${c[1]},${c[2]},${a})`);
 const lerp = (a, b, t) => a.map((v, k) => Math.round(v + (b[k] - v) * t));
@@ -59,11 +62,42 @@ export function draw(ctx, a, theme, w, h, fontSize = theme.fontSize * grow(w, h)
   const k = fs / 14;
   const mix = (t) => lerp(theme.bg, theme.fg, t);
   const color = (i, s) => s.color ?? theme.palette[i % theme.palette.length];
-  const font = (scale) => `${fs * scale}px ${FONT}`;
-  const textW = (s, f) => { ctx.font = f; return ctx.measureText(s).width; };
+  const family = theme.font ? `${theme.font}, ${FONT}` : FONT;
+  const font = (scale) => fs * scale;
+  const runFont = (f, r) => `${f * r.scale}px ${family}`;
+  /** Runs of math markup with their x offsets, and the total width. */
+  const layoutRuns = (s, f) => {
+    const out = [];
+    let [end, prev] = [0, 0];
+    for (const r of mathRuns(s)) {
+      ctx.font = runFont(f, r);
+      const w = ctx.measureText(r.text).width;
+      const x = r.stack ? prev : end;
+      end = r.stack ? Math.max(end, x + w) : x + w;
+      prev = x;
+      out.push([r, x]);
+    }
+    return [out, end];
+  };
+  const textW = (s, f) => layoutRuns(s, f)[1];
   const text = (s, x, y, f, c, align, baseline) => {
-    ctx.font = f; ctx.fillStyle = css(c); ctx.textAlign = align; ctx.textBaseline = baseline;
-    ctx.fillText(s, x, y);
+    const [runs, w] = layoutRuns(s, f);
+    ctx.fillStyle = css(c);
+    if (runs.length === 1 && runs[0][0].scale === 1 && runs[0][0].shift === 0) {
+      ctx.font = runFont(f, runs[0][0]); ctx.textAlign = align; ctx.textBaseline = baseline;
+      ctx.fillText(runs[0][0].text, x, y);
+      return;
+    }
+    // runs go on their own baselines, from the line box the plain text uses
+    const em = f / 1.24;
+    const x0 = align === 'center' ? -w / 2 : align === 'right' ? -w : 0;
+    const base = em * (baseline === 'top' ? 0.76 : baseline === 'middle' ? 0.26 : baseline === 'bottom' ? -0.24 : 0);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    for (const [r, rx] of runs) {
+      ctx.font = runFont(f, r);
+      ctx.fillText(r.text, x + x0 + rx, y + base - r.shift * em);
+    }
   };
   const box = (r, c, alpha = 1) => { ctx.fillStyle = css(c, alpha); ctx.fillRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0); };
   const hline = (x0, x1, y, c) => { const yy = Math.round(y); ctx.fillStyle = css(c); ctx.fillRect(Math.round(x0), yy, Math.round(x1) - Math.round(x0) + 1, 1); };

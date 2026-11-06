@@ -268,3 +268,67 @@ test('key points: refuses what it should', () => {
   const [x, y] = L.breakJumps(linspace(-1, 1, 11), linspace(-1, 1, 11).map((v) => (v === 0 ? NaN : 1 / v)));
   assert.ok(x.length >= 11 && y.length === x.length);
 });
+
+// src/plot/mathtext.rs's tests
+test('plot text markup', () => {
+  const r = (text, scale, shift, stack = false) => ({ text, scale, shift, stack });
+  const S = 0.75;
+  eq(L.mathRuns('x^2 + 1'), [r('x', 1, 0), r('2', S, 0.42), r(' + 1', 1, 0)]);
+  eq(L.mathRuns('x^{10}'), [r('x', 1, 0), r('10', S, 0.42)]);
+  eq(L.mathRuns('v_0 = a_{ij}'), [r('v', 1, 0), r('0', S, -0.2), r(' = a', 1, 0), r('ij', S, -0.2)]);
+  const e = L.mathRuns('e^{-t/\\tau_0}');
+  eq(e[1], r('−t/τ', S, 0.42));
+  eq([e[2].text, e[2].scale], ['0', 0.5625]);
+  close(e[2].shift, 0.42 - 0.2 * S, 1e-12);
+  eq(L.mathRuns('e^(−x / 2)')[1], r('−x / 2', S, 0.42));
+  eq(L.mathRuns('x^\\alpha')[1], r('α', S, 0.42));
+  const i = L.mathRuns('\\int_0^\\infty \\alpha\\Omega');
+  eq(i[0], r('∫', 1.3, -0.1));
+  eq(i[1], r('0', S, -0.2));
+  assert.ok(i[2].stack);
+  eq(i[2].text, '∞');
+  eq(i[3], r(' αΩ', 1, 0));
+  assert.ok(![...L.mathRuns('x^2^3'), ...L.mathRuns('x_{}^2')].some((x) => x.stack));
+  eq(L.mathRuns('\\bf{bold}\\it x\\_1 \\{a\\}'), [r('bold x_1 {a}', 1, 0)]);
+  eq(L.mathRuns('\\foo √x²'), [r('\\foo √x²', 1, 0)]);
+  eq(L.mathRuns('a^'), [r('a^', 1, 0)]);
+  eq(L.mathRuns('{x'), [r('{x', 1, 0)]);
+  eq(L.mathRuns('x^{2'), [r('x', 1, 0), r('{', S, 0.42), r('2', 1, 0)]);
+  eq(L.mathRuns('\\'), [r('\\', 1, 0)]);
+  eq(L.mathRuns(''), []);
+});
+
+test('settings: qcalcp.ini', () => {
+  const color = (s) => ({ '#000000': [0, 0, 0], '#ff0000': [255, 0, 0], '#00ff00': [0, 255, 0], white: [255, 255, 255] }[s.trim()] ?? null);
+  const d = L.parseConfig(L.DEFAULT_INI, color);
+  eq(d.warnings, []); eq(d.appearance, 'light'); eq(d.zoomStep, 1.15); eq(d.plot, {});
+  const key = (c, name) => c.keys.filter(([k]) => k === name).map(([, a]) => a);
+  eq(key(d, 'run').length, 2);
+  eq(key(d, 'dark')[0], { ctrl: true, shift: true, alt: false, key: 'd' });
+  eq(key(d, 'clear_history'), []);
+  assert.ok(L.accelMatches(key(d, 'run')[0], { key: 'Enter', ctrlKey: true, metaKey: false, shiftKey: false, altKey: false }));
+  assert.ok(L.accelMatches(key(d, 'keypad')[0], { key: 'F9', ctrlKey: false, metaKey: false, shiftKey: false, altKey: false }));
+  assert.ok(!L.accelMatches(key(d, 'keypad')[0], { key: 'F9', ctrlKey: true, metaKey: false, shiftKey: false, altKey: false }));
+  // the desktop's test: bad values fall back with a warning, the good ones apply
+  const c = L.parseConfig('[theme]\nplot_bg=#000000\npalette=#ff0000;#00ff00\nfont_size=-3\nappearance=blue\n[input]\nzoom_step=abc\n[keys]\nrun=F6\nkeypad=\nmine=<Alt>x\nfullscreen=<Nope>x\nquit=<Control>q\n', color);
+  eq(c.plot.bg, [0, 0, 0]); eq(c.plot.palette, [[255, 0, 0], [0, 255, 0]]); eq(c.plot.fontSize, undefined);
+  eq(c.appearance, 'light'); eq(c.zoomStep, 1.15);
+  for (const part of ['font_size=-3', 'appearance=blue', 'zoom_step=abc', 'mine: no such action', 'bad accelerator <Nope>x']) assert.ok(c.warnings.some((w) => w.includes(part)), part);
+  eq(key(c, 'run').map((a) => a.key), ['f6']); eq(key(c, 'keypad'), []);
+  assert.ok(!c.warnings.some((w) => w.includes('quit')), 'keys for Advanced are fine');
+  assert.ok(L.parseConfig('[keys]\nrun=F9\n', color).warnings.some((w) => w.includes("F9 is already run's")));
+  assert.ok(L.parseConfig('not an ini', color).warnings[0].includes('using defaults'));
+  assert.equal(L.parseConfig('[theme]\nplot_bg=nope\n', color).plot.bg, undefined);
+  // appearance rewritten, the rest kept
+  const w = L.withAppearance('# mine\n[theme]\nappearance=light\nfont=x\n', 'dark');
+  eq(w, '# mine\n[theme]\nappearance=dark\nfont=x\n');
+  eq(L.withAppearance('[theme]\nfont=x\n', 'dark'), '[theme]\nappearance=dark\nfont=x\n');
+  assert.match(L.withAppearance('[ui]\nmode=calc\n', 'system'), /\[theme\]\nappearance=system\n$/);
+});
+
+test('files read like the desktop', () => {
+  eq(L.trimCells([['a', '', ''], ['', ''], ['1', '', '2', '']]), [['a'], ['1', '', '2']]);
+  eq(L.cellText({ t: 'n', v: 1.5 }), '1.5'); eq(L.cellText({ t: 'b', v: true }), '1'); eq(L.cellText({ t: 'b', v: false }), '0');
+  eq(L.cellText({ t: 's', v: '  x ' }), 'x'); eq(L.cellText({ t: 'e', v: 7 }), ''); eq(L.cellText(undefined), ''); eq(L.cellText({ t: 'z' }), '');
+  eq(L.cellText({ t: 'd', v: new Date(Date.UTC(1970, 0, 1)) }), '25569');
+});

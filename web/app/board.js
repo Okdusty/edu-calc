@@ -1,7 +1,7 @@
 // A touch-first canvas over one axes, for the Graph and Data tabs: pan with a flick that keeps gliding,
 // pinch, wheel, zoom buttons, tap for a point, double-tap to reset (src/gui/simple/board.rs).
 import { adjust, num, readout } from './logic.js';
-import { SvgContext, THEMES, draw, pick, pinNear, shownRanges, unproject } from './plot.js';
+import { SvgContext, THEMES, draw, pick, pinNear, shownRanges, themed, unproject } from './plot.js';
 
 const TAP_SLOP = 8;
 const HINT = 'Drag or flick to pan · pinch or scroll to zoom · tap a curve to read a point';
@@ -23,6 +23,8 @@ export class Board {
   constructor(graph, themeName) {
     this.graph = graph;
     this.themeName = themeName;
+    this.plotOverrides = {};
+    this.wheelStep = 1.15;
     this.axes = emptyAxes(graph);
     this.frame = null;
     this.changed = () => {};
@@ -116,7 +118,7 @@ export class Board {
       e.preventDefault();
       const dy = e.deltaMode === 0 ? e.deltaY / 100 : e.deltaMode === 1 ? e.deltaY / 3 : e.deltaY;
       this.stopFling();
-      this.change([0, 0], 1.15 ** dy, at(e));
+      this.change([0, 0], this.wheelStep ** dy, at(e));
       clearTimeout(this.wheelTimer);
       this.wheelTimer = setTimeout(() => this.resample(true), 250);
     }, { passive: false });
@@ -220,7 +222,7 @@ export class Board {
     }
     const ctx = c.getContext('2d');
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
-    this.frame = draw(ctx, this.axes, THEMES[this.themeName], w, h);
+    this.frame = draw(ctx, this.axes, themed(this.themeName, this.plotOverrides), w, h);
   }
 
   /** The chart in the light theme at 1600 x 1000: "png" -> Blob, "svg" -> Blob. */

@@ -1153,7 +1153,7 @@ fn clim(a: &Axes) -> (f64, f64) {
 }
 
 /// ~n nice major ticks (value, label) in [lo, hi], plus minor ticks (log axes only).
-fn ticks((lo, hi): (f64, f64), log: bool, n: usize) -> (Vec<(f64, String)>, Vec<f64>) {
+pub(crate) fn ticks((lo, hi): (f64, f64), log: bool, n: usize) -> (Vec<(f64, String)>, Vec<f64>) {
     let (lo, hi, n) = (lo.min(hi), lo.max(hi), n.max(1)); // reversed axes (matview) tick the same values
     if log && lo > 0.0 {
         let (a, b) = (lo.log10().ceil() as i32, hi.log10().floor() as i32);

@@ -1,9 +1,9 @@
 //! Figure model. CONTRACT shared by plot builtins, renderer, GUI, TUI, CLI; change only additively.
-mod analysis;
+pub(crate) mod analysis;
 pub mod builtins;
 mod calculus;
 pub mod cursor;
-mod mathtext;
+pub(crate) mod mathtext;
 pub mod render;
 
 use crate::lang::Interp;

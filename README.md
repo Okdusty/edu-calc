@@ -7,7 +7,7 @@ A calculator, Octave-style interpreter and plotter in one program, with a GTK 4 
 
 **Status: beta.** Snapshot builds for Linux (AppImage) and Windows (64-bit installer or zip) are on the releases page.
 
-**In a browser:** [okdusty.github.io/edu-calc](https://okdusty.github.io/edu-calc/) has Simple mode (Calculator, Graph and Data) on the same calculator engine, libqalculate compiled to WebAssembly. After the first visit it works with no network at all, and your history, table, functions and settings stay in that browser. Advanced and the Octave interpreter are in the desktop app only.
+**In a browser:** [okdusty.github.io/edu-calc](https://okdusty.github.io/edu-calc/) has Simple mode (Calculator, Graph and Data) on the same calculator engine, libqalculate compiled to WebAssembly. After the first visit it works with no network at all, and your history, table, functions and settings stay in that browser. Advanced and the Octave interpreter are in the desktop app only. Menu → Settings edits the same `qcalcp.ini` and `style.css` as the desktop app, and a file from the desktop works as it is.
 
 ![Advanced calculator: answers with units and exact forms, autocomplete, and a cubic with its roots, extrema and point of symmetry marked](demo/gui-calc.png)
 

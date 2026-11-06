@@ -411,20 +411,38 @@ export function fitEquation(f) {
   }
 }
 
-function solve3(a, b) {
-  const m = a.map((r, i) => [...r, b[i]]);
-  for (let col = 0; col < 3; col++) {
-    let pivot = col;
-    for (let r = col + 1; r < 3; r++) if (Math.abs(m[r][col]) > Math.abs(m[pivot][col])) pivot = r;
-    if (m[pivot][col] === 0) return null;
-    [m[col], m[pivot]] = [m[pivot], m[col]];
-    for (let r = 0; r < 3; r++) {
-      if (r === col) continue;
-      const k = m[r][col] / m[col][col];
-      for (let j = col; j < 4; j++) m[r][j] -= k * m[col][j];
+/** Ax = b by LU with partial pivoting, step for step as nalgebra does it on the desktop: the same rounding. */
+function solve3(a0, b0) {
+  const a = a0.map((r) => [...r]);
+  const b = [...b0];
+  const n = 3;
+  const perm = [];
+  for (let i = 0; i < n; i++) {
+    let piv = i;
+    for (let r = i + 1; r < n; r++) if (Math.abs(a[r][i]) > Math.abs(a[piv][i])) piv = r;
+    const diag = a[piv][i];
+    if (diag === 0) continue;
+    perm.push([i, piv]);
+    if (piv !== i) [a[i], a[piv]] = [a[piv], a[i]];
+    const inv = 1 / diag;
+    for (let r = i + 1; r < n; r++) a[r][i] *= inv;
+    for (let k = i + 1; k < n; k++) {
+      const top = a[i][k];
+      for (let r = i + 1; r < n; r++) a[r][k] += -top * a[r][i];
     }
   }
-  return m.map((r, i) => r[3] / r[i]);
+  for (const [i, piv] of perm) if (i !== piv) [b[i], b[piv]] = [b[piv], b[i]];
+  for (let i = 0; i < n; i++) {
+    const c = b[i];
+    for (let r = i + 1; r < n; r++) b[r] += -c * a[r][i];
+  }
+  for (let i = n - 1; i >= 0; i--) {
+    if (a[i][i] === 0) return null;
+    const c = b[i] / a[i][i];
+    b[i] = c;
+    for (let r = 0; r < i; r++) b[r] += -c * a[r][i];
+  }
+  return b;
 }
 
 /** Least squares of FIT_NAMES[kind] over the points. Throws the reason. Exponential, power and logarithmic refuse points logarithms can't take. */
@@ -471,7 +489,8 @@ export function fit(points, kind) {
   const my = meanOf(points, 1);
   const total = points.reduce((s, p) => s + (p[1] - my) ** 2, 0);
   const rest = points.reduce((s, p) => s + (p[1] - fitAt(f, p[0])) ** 2, 0);
-  f.r2 = total > 0 ? Math.max(1 - rest / total, 0) : null;
+  // NaN (values too large to square) counts as 0, as in Rust's f64::max
+  f.r2 = total > 0 ? (1 - rest / total > 0 ? 1 - rest / total : 0) : null;
   return f;
 }
 
@@ -834,7 +853,9 @@ export function ticks(a, b, n0) {
   const raw = (hi - lo) / n;
   if (!(Number.isFinite(raw) && raw > 0)) return [];
   const mag = 10 ** Math.floor(Math.log10(raw));
-  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw * 0.999) ?? 10 * mag;
+  const nice = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw * 0.999) ?? 10 * mag;
+  // pixel-centered ranges (0.5 .. n + 0.5) tick whole cells only
+  const step = Number.isInteger(lo - 0.5) && Number.isInteger(hi - 0.5) ? Math.max(nice, 1) : nice;
   const first = Math.ceil(lo / step - 1e-6);
   const last = Math.floor(hi / step + 1e-6);
   const big = Math.max(Math.abs(lo), Math.abs(hi));
@@ -898,4 +919,252 @@ export function parseHistory(text) {
     out.push({ expr: f[0], input: f[1], result: f[2], approx: f.slice(3).join('\t') });
   }
   return out.slice(-KEEP);
+}
+
+// ---- text markup in plot labels (src/plot/mathtext.rs) ------------------------------------------
+
+const SYMBOLS = {
+  alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', epsilon: 'ε', zeta: 'ζ', eta: 'η', theta: 'θ', vartheta: 'ϑ', iota: 'ι', kappa: 'κ', lambda: 'λ', mu: 'μ', nu: 'ν', xi: 'ξ', pi: 'π', rho: 'ρ', sigma: 'σ', varsigma: 'ς', tau: 'τ', upsilon: 'υ', phi: 'φ', varphi: 'ϕ', chi: 'χ', psi: 'ψ', omega: 'ω',
+  Gamma: 'Γ', Delta: 'Δ', Theta: 'Θ', Lambda: 'Λ', Xi: 'Ξ', Pi: 'Π', Sigma: 'Σ', Upsilon: 'Υ', Phi: 'Φ', Psi: 'Ψ', Omega: 'Ω',
+  int: '∫', oint: '∮', sum: '∑', prod: '∏', sqrt: '√', surd: '√', infty: '∞', partial: '∂', nabla: '∇', pm: '±', mp: '∓', times: '×', cdot: '·', div: '÷',
+  leq: '≤', le: '≤', geq: '≥', ge: '≥', neq: '≠', ne: '≠', approx: '≈', equiv: '≡', propto: '∝', sim: '∼', deg: '°', circ: '∘',
+  rightarrow: '→', to: '→', leftarrow: '←', leftrightarrow: '↔', Rightarrow: '⇒', Leftarrow: '⇐', Leftrightarrow: '⇔', uparrow: '↑', downarrow: '↓',
+  in: '∈', forall: '∀', exists: '∃', prime: '′', ldots: '…', dots: '…', cdots: '⋯', hbar: 'ℏ', ell: 'ℓ',
+};
+
+/** "x^2", "v_0", "\alpha" -> runs of text, each with a size and a baseline shift; Unicode passes through. */
+export function mathRuns(s) {
+  const out = [];
+  const put = (text0, scale0, shift0) => {
+    let [scale, shift] = [scale0, shift0];
+    if (['∫', '∮', '∑', '∏'].includes(text0)) { shift = shift0 - 0.1 * scale0; scale = scale0 * 1.3; }
+    const text = scale < 1 ? text0.replaceAll('-', MINUS) : text0;
+    const last = out[out.length - 1];
+    if (last && last.scale === scale && last.shift === shift) last.text += text;
+    else out.push({ text, scale, shift, stack: false });
+  };
+  const close = (c, i) => {
+    const [open, shut] = [c[i], c[i] === '(' ? ')' : '}'];
+    let depth = 0;
+    for (let k = i; k < c.length; k++) {
+      depth += (c[k] === open ? 1 : 0) - (c[k] === shut ? 1 : 0);
+      if (depth === 0) return k;
+    }
+    return null;
+  };
+  const command = (c, i) => {
+    let n = 0;
+    while (i + 1 + n < c.length && /^[A-Za-z]$/.test(c[i + 1 + n])) n++;
+    return n === 0 ? Math.min(c.length - i, 2) : n + 1;
+  };
+  const walk = (c, scale, shift) => {
+    let last = null;
+    let i = 0;
+    while (i < c.length) {
+      const script = last;
+      last = null;
+      const ch = c[i];
+      if (ch === '{') {
+        const j = close(c, i);
+        if (j !== null) { walk(c.slice(i + 1, j), scale, shift); i = j + 1; } else { put('{', scale, shift); i += 1; }
+      } else if ((ch === '^' || ch === '_') && i + 1 < c.length) {
+        const up = ch === '^' ? 0.42 : -0.2;
+        const [sc, sh] = [Math.max(scale * 0.75, 0.55), shift + up * scale];
+        i += 1;
+        let j = null;
+        if (c[i] === '{' || c[i] === '(') j = close(c, i);
+        else if (c[i] === '\\') j = i + command(c, i) - 1;
+        const first = out.length;
+        if (j !== null && c[i] !== '\\') walk(c.slice(i + 1, j), sc, sh);
+        else walk(c.slice(i, (j ?? i) + 1), sc, sh);
+        i = (j ?? i) + 1;
+        if (first < out.length) {
+          if (script !== null && script !== ch) out[first].stack = true;
+          else last = ch;
+        }
+      } else if (ch === '\\') {
+        const n = command(c, i);
+        const name = c.slice(i + 1, i + n).join('');
+        if (SYMBOLS[name]) put(SYMBOLS[name], scale, shift);
+        else if (n === 2 && !/^[A-Za-z]$/.test(c[i + 1])) put(name, scale, shift);
+        else if (!['it', 'bf', 'rm', 'sl'].includes(name)) put(`\\${name}`, scale, shift);
+        i += n;
+      } else {
+        put(ch, scale, shift);
+        i += 1;
+      }
+    }
+  };
+  walk([...s], 1, 0);
+  return out;
+}
+
+// ---- qcalcp.ini: the keys that mean something here; the rest of a desktop file is simply ignored -
+
+export const DEFAULT_INI = `# EduCalculator settings: the same qcalcp.ini as the desktop app, whose own file can be pasted in.
+# Keys for Advanced have no effect here. Delete a key to get its default back.
+
+[theme]
+# system (follow the device's light / dark setting) | light | dark
+appearance=light
+# Plot overrides, applied to both dark and light. Any CSS color: #1e1e22, rgb(30,30,34), white
+#plot_bg=#1e1e22
+#plot_fg=#dcdcdc
+#plot_grid=#414148
+#palette=#4da6ff;#ff7846;#fac83c;#be78e6
+#font=sans-serif
+#font_size=14
+
+[input]
+# zoom factor per mouse-wheel notch
+zoom_step=1.15
+
+[keys]
+# accelerators, several separated by ;  empty value = unbound
+run=<Control>Return;F5
+# show/hide the keypad
+keypad=F9
+# data table
+data=<Control>d
+export=<Control>e
+reset_view=<Control>0
+dark=<Control><Shift>d
+fullscreen=F11
+clear_history=
+`;
+
+const WEB_ACTIONS = ['run', 'keypad', 'data', 'export', 'reset_view', 'dark', 'fullscreen', 'clear_history'];
+const DESKTOP_ACTIONS = ['mode', 'number_pad', 'to_calc', 'auto_visual', 'new', 'open', 'save', 'save_as', 'trace', 'clear_pins', 'toggle_layout', 'swap_sides', 'toggle_editor', 'toggle_console', 'toggle_workspace', 'quit', 'calc_twos'];
+const KEY_NAMES = { return: 'enter', kp_enter: 'enter', space: ' ', esc: 'escape', page_up: 'pageup', page_down: 'pagedown', minus: '-', plus: '+', equal: '=', comma: ',', period: '.', slash: '/' };
+
+/** "<Control><Shift>d" -> { ctrl, shift, alt, key }, or null when it isn't an accelerator. */
+export function parseAccel(text) {
+  const m = /^((?:<[A-Za-z]+>)*)([^<>\s]+)$/.exec(text.trim());
+  if (!m) return null;
+  const a = { ctrl: false, shift: false, alt: false, key: m[2].toLowerCase() };
+  for (const [, mod] of m[1].matchAll(/<([A-Za-z]+)>/g)) {
+    const name = mod.toLowerCase();
+    if (name === 'control' || name === 'ctrl' || name === 'primary') a.ctrl = true;
+    else if (name === 'shift') a.shift = true;
+    else if (name === 'alt' || name === 'mod1') a.alt = true;
+    else return null;
+  }
+  a.key = KEY_NAMES[a.key] ?? a.key;
+  if (a.key.length > 1 && !/^f([1-9]|1[0-9]|2[0-4])$/.test(a.key) && !Object.values(KEY_NAMES).includes(a.key) && !['tab', 'home', 'end', 'delete', 'backspace', 'insert', 'up', 'down', 'left', 'right', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(a.key)) return null;
+  return a;
+}
+
+export const accelMatches = (a, e) => a.key === e.key.toLowerCase() && a.ctrl === (e.ctrlKey || e.metaKey) && a.shift === e.shiftKey && a.alt === e.altKey;
+
+function readIni(text) {
+  const groups = {};
+  let group = null;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    const head = /^\[([^\]]+)\]$/.exec(line);
+    if (head) { group = head[1]; groups[group] ??= {}; continue; }
+    const eq = line.indexOf('=');
+    if (eq < 0 || group === null) throw new Error(`"${line}" is neither a [group] nor a key=value line`);
+    groups[group][line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+  }
+  return groups;
+}
+
+/** Settings from ini text, every bad value falling back to its default with a warning, as on the desktop.
+ *  `color(text)` -> [r, g, b] or null (the browser's own CSS parser). */
+export function parseConfig(text, color) {
+  const warnings = [];
+  let user = {};
+  try {
+    user = readIni(text);
+  } catch (e) {
+    warnings.push(`qcalcp.ini: ${e.message}; using defaults`);
+  }
+  const defaults = readIni(DEFAULT_INI);
+  const get = (group, key, parse) => {
+    const v = user[group]?.[key];
+    if (v !== undefined) {
+      const x = parse(v);
+      if (x !== null) return x;
+      warnings.push(`qcalcp.ini: [${group}] ${key}=${v}: bad value, using default`);
+    }
+    return defaults[group]?.[key] === undefined ? null : parse(defaults[group][key]);
+  };
+  const positive = (s) => { const v = FLOAT.test(s) ? Number(s) : NaN; return v > 0 && Number.isFinite(v) ? v : null; };
+  const out = {
+    appearance: get('theme', 'appearance', (s) => (['system', 'light', 'dark'].includes(s) ? s : null)),
+    zoomStep: get('input', 'zoom_step', positive),
+    plot: {},
+    keys: [],
+    warnings,
+  };
+  const set = (name, v) => { if (v !== null) out.plot[name] = v; };
+  set('bg', get('theme', 'plot_bg', color));
+  set('fg', get('theme', 'plot_fg', color));
+  set('grid', get('theme', 'plot_grid', color));
+  set('palette', get('theme', 'palette', (s) => {
+    const list = s.split(';').filter((c) => c.trim() !== '').map((c) => color(c));
+    return list.length && list.every((c) => c !== null) ? list : null;
+  }));
+  set('font', get('theme', 'font', (s) => (s === '' ? null : s)));
+  set('fontSize', get('theme', 'font_size', (s) => { const v = /^\d+$/.test(s) ? Number(s) : 0; return v > 0 ? v : null; }));
+  // default bindings, overridden per key; the first binding of an accelerator wins
+  const merged = { ...defaults.keys, ...(user.keys ?? {}) };
+  const taken = [];
+  for (const [action, value] of Object.entries(merged)) {
+    if (DESKTOP_ACTIONS.includes(action)) continue;
+    if (!WEB_ACTIONS.includes(action)) { warnings.push(`qcalcp.ini: [keys] ${action}: no such action`); continue; }
+    for (const text1 of value.split(';').map((s) => s.trim()).filter(Boolean)) {
+      const a = parseAccel(text1);
+      if (!a) { warnings.push(`qcalcp.ini: [keys] ${action}: bad accelerator ${text1}`); continue; }
+      const other = taken.find((t) => JSON.stringify(t.a) === JSON.stringify(a));
+      if (other) { warnings.push(`qcalcp.ini: [keys] ${action}: ${text1} is already ${other.action}'s`); continue; }
+      taken.push({ a, action });
+      out.keys.push([action, a]);
+    }
+  }
+  return out;
+}
+
+/** The ini text with its appearance line changed, comments and the rest kept, as the desktop rewrites its file. */
+export function withAppearance(text, mode) {
+  if (/^appearance\s*=.*$/m.test(text)) return text.replace(/^appearance\s*=.*$/m, `appearance=${mode}`);
+  if (/^\[theme\]\s*$/m.test(text)) return text.replace(/^\[theme\]\s*$/m, `[theme]\nappearance=${mode}`);
+  return `${text.replace(/\s*$/, '\n')}\n[theme]\nappearance=${mode}\n`;
+}
+
+/** What a workbook or file becomes in the table: trailing blank cells go, and blank rows (src/builtins/io.rs). */
+export function trimCells(g) {
+  return g.map((r) => {
+    let n = r.length;
+    while (n > 0 && r[n - 1] === '') n--;
+    return r.slice(0, n);
+  }).filter((r) => r.length > 0);
+}
+
+/** A worksheet as the Data tab reads it (`XLSX`: the spreadsheet library). */
+export function sheetRows(XLSX, sheet) {
+  const rows = [];
+  if (sheet['!ref']) {
+    const { s, e } = XLSX.utils.decode_range(sheet['!ref']);
+    for (let r = s.r; r <= e.r; r++) {
+      const row = [];
+      for (let c = s.c; c <= e.c; c++) row.push(cellText(sheet[XLSX.utils.encode_cell({ r, c })]));
+      rows.push(row);
+    }
+  }
+  return trimCells(rows);
+}
+
+/** A worksheet cell's text, as the desktop reads it: numbers and dates as numbers, booleans 1 or 0, errors blank. */
+export function cellText(cell) {
+  if (!cell) return '';
+  switch (cell.t) {
+    case 'n': return fmtNum(cell.v);
+    case 'b': return cell.v ? '1' : '0';
+    case 's': return String(cell.v ?? '').trim();
+    case 'd': return fmtNum(cell.v.getTime() / 86400000 + 25569);
+    default: return '';
+  }
 }

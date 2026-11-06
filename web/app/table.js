@@ -1,7 +1,7 @@
 // The spreadsheet: row 0 holds the column names (echoed in the sticky titles), the rows below the
 // numbers. Enter / Down, Shift+Enter / Up, Tab, Shift+Tab move between cells, moving past the last
 // row adds one. Only the rows in view exist as widgets, so thousands are fine (src/gui/data.rs).
-import { cells, parseText, splitHeader, toNum, writeCells } from './logic.js';
+import { cells, parseText, sheetRows, splitHeader, toNum, trimCells, writeCells } from './logic.js';
 
 const ROW_H = 40;
 const TEXT_TIP = 'Enter a finite number. This cell is excluded from charts and statistics.';
@@ -380,7 +380,7 @@ export class Table {
     try {
       if (BOOK.test(file.name)) {
         const XLSX = await this.ui.loadBook();
-        this.book = { XLSX, wb: XLSX.read(await file.arrayBuffer(), { dense: false }) };
+        this.book = { XLSX, wb: XLSX.read(await file.arrayBuffer(), { dense: false, cellDates: false }) };
         this.source = { name: file.name, sheet: this.book.wb.SheetNames[0] };
         this.sheets.innerHTML = '';
         for (const n of this.book.wb.SheetNames) this.sheets.append(new Option(n, n));
@@ -389,7 +389,7 @@ export class Table {
       } else {
         this.sheets.hidden = true;
         this.source = { name: file.name, sheet: null };
-        this.fill(parseText(await file.text()));
+        this.fill(trimCells(parseText(await file.text())));
       }
     } catch (e) {
       this.say(`${file.name}: ${e.message}`, true);
@@ -400,8 +400,7 @@ export class Table {
     const { XLSX, wb } = this.book;
     this.source.sheet = name;
     this.sheets.value = name;
-    const raw = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, blankrows: true, defval: '' });
-    this.fill(raw.map((r) => r.map((v) => (typeof v === 'number' ? String(v) : String(v).trim()))));
+    this.fill(sheetRows(XLSX, wb.Sheets[name]));
   }
 
   fill(g) {

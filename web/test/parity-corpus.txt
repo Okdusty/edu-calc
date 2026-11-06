@@ -341,3 +341,8 @@ ln(-1)
 9.99999999999
 100 / 3
 2 / 3 + 1 / 3
+10 EUR to USD
+100 USD to JPY
+1 GBP to EUR
+50 EUR to TRY
+1 BTC to USD

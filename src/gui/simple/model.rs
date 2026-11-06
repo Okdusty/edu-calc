@@ -610,6 +610,171 @@ mod tests {
         assert!(explain("x", "plot sampling timed out").contains("too long"));
         assert_eq!(explain("x", "something else"), "something else");
     }
+    /// Writes web/test/parity-model.json: what the desktop computes for the Data and Graph tabs, which
+    /// the web port must match (web/test/parity-model.test.mjs, parity.mjs). After a change here:
+    /// `cargo test export_model_parity -- --ignored`.
+    #[test]
+    #[ignore = "writes web/test/parity-model.json"]
+    fn export_model_parity() {
+        use crate::gui::canvas;
+        use crate::gui::keypad;
+        use crate::plot::{analysis, mathtext, render};
+        fn j(s: &str) -> String {
+            let mut o = String::from("\"");
+            for c in s.chars() {
+                match c {
+                    '"' => o += "\\\"",
+                    '\\' => o += "\\\\",
+                    '\n' => o += "\\n",
+                    '\r' => o += "\\r",
+                    '\t' => o += "\\t",
+                    c if (c as u32) < 0x20 => o += &format!("\\u{:04x}", c as u32),
+                    c => o.push(c),
+                }
+            }
+            o + "\""
+        }
+        fn n(v: f64) -> String { if v.is_finite() { format!("{v:e}") } else { "null".into() } }
+        fn on(v: Option<f64>) -> String { v.map_or("null".into(), n) }
+        fn arr(v: Vec<String>) -> String { format!("[{}]", v.join(",")) }
+        fn nums(v: &[f64]) -> String { arr(v.iter().map(|x| n(*x)).collect()) }
+        fn strs<S: AsRef<str>>(v: &[S]) -> String { arr(v.iter().map(|s| j(s.as_ref())).collect()) }
+        fn grid(g: &[Vec<String>]) -> String { arr(g.iter().map(|r| strs(r)).collect()) }
+        fn points(v: &[[f64; 2]]) -> String { arr(v.iter().map(|p| nums(p)).collect()) }
+        let g = |rows: &[&[&str]]| -> Vec<Vec<String>> { rows.iter().map(|r| r.iter().map(|s| s.to_string()).collect()).collect() };
+        let mut out = vec![];
+
+        let values = [0.0, -0.0, 1.23456, 0.944, -2.5, 1234567.0, 0.00001234, 100.0, 999.95, 9999.5, 99999.5, 0.0001, 0.00009999, 1e300, 1e-300, 3.14159265, 2.5e-5, 123456.7, 999999.5, 1000000.0, -0.02, 2.02, 1.0 / 3.0, 7.05, 0.9991049325];
+        out.push(format!("\"num\":{}", arr(values.iter().map(|v| format!("[{},{}]", n(*v), j(&cursor::num(*v)))).collect())));
+        out.push(format!("\"fmtNum\":{}", arr([1.5, 0.1, 1e15, 1e-6, 1234567.0, 100.0, -3.25, 2.5e-5, 1e21].iter().map(|v| format!("[{},{}]", n(*v), j(&io::fmt_num(*v)))).collect())));
+        let cells = ["1.5", " -2e3 ", "1,5", "1,5,2", "Inf", "-inf", "NaN", "", "abc", "1e", ".5", "5.", "+7", "0x10", "1 2", "infinity"];
+        out.push(format!("\"toNum\":{}", arr(cells.iter().map(|s| format!("[{},{},{}]", j(s), io::to_num(s, false).map_or("\"none\"".to_string(), |v| if v.is_nan() { "\"nan\"".into() } else if v.is_infinite() { format!("\"{v}\"") } else { n(v) }), io::to_num(s, true).map_or("\"none\"".to_string(), |v| if v.is_nan() { "\"nan\"".into() } else if v.is_infinite() { format!("\"{v}\"") } else { n(v) }))).collect())));
+        out.push(format!("\"validName\":{}", arr(["X", "Height (cm)", "2nd", "a b c", "  y ", "ä", "_x", "v_0"].iter().map(|s| format!("[{},{}]", j(s), j(&io::valid_name(s)))).collect())));
+        let texts = ["a,b\n1,2\n", "1\t2,5\n3\t4\n", "1;2,5\n3;4", "1 2\n3 4\n", "\"a,b\",2\n\"say \"\"hi\"\"\",3\n", "\u{feff}x,y\n1,2", "Title\nday;temp\n1;20,5\n2;22\n", "1,5\n2,5\n", "a\n\nb\n", "x y\n1.5 2,5\n", "1\r\n2\r\n", "1,2\r\n3,4\r\n", ""];
+        out.push(format!("\"parseText\":{}", arr(texts.iter().map(|s| { let p = io::parse_text(s, None); let (h, b) = io::split_header(p.clone()); format!("[{},{},{},{}]", j(s), grid(&p), grid(&h), grid(&b)) }).collect())));
+
+        let tpls = [("sin(□)", ""), ("7", "□"), ("sin(□)", "x+1"), ("□²", "x+1"), ("√(□)", "2"), ("1/□", "(a+b)"), ("□^□", "x"), ("□^□", "2x+1"), ("integrate(□, □, □, x)", "x²"), ("sin(□)", "□"), ("abs(□)", "□+1"), (" to ", ""), ("root(□, □)", "27"), ("mean(□)", "X"), ("□!", "x.5"), ("log(□, □)", "a_b")];
+        out.push(format!("\"expand\":{}", arr(tpls.iter().map(|(t, s)| { let (o, k) = keypad::expand(t, s); format!("[{},{},{},{}]", j(t), j(s), j(&o), k.map_or("null".into(), |k| k.to_string())) }).collect())));
+
+        let inputs = [" y = 2x + 1 ", "x²", "x=2", "x²+y²=1", "y=x<2", "y=", "sin(□)", "y=x; quit", "-x + 1", "x**2", "2^-x", "log(x, 2)", "sin(cos(x))", "x! / 2", "e^(-x²)", "(x + 1)(x − 1)", "3.5x", "√(x)", "2x +", "* x", "x +* 2", "(^x)", "sin(x +)", "sin(x", "sin(cos(x", "x + 1)", "sin()", "()", "2,5x", "log(x,)", "1.2.3x", "x..2", "y = ", "=", "x;", "[1,2]", "x:2", "1 + (2", "2 × ÷ 3", "÷ 2", "x −", "(,x)", "log(,x)"];
+        out.push(format!("\"expression\":{}", arr(inputs.iter().map(|s| match expression(s) { Ok(e) => format!("[{},{},null]", j(s), j(&e)), Err(e) => format!("[{},null,{}]", j(s), j(&e)) }).collect())));
+        // whole graph rows through the engine, errors in a student's words
+        let o = qalc::Options { angle: "deg".into(), ..Default::default() };
+        let rows = ["foo(x)", "abc", "x+t", "x+y", "2x+", "sin(", "sin()", "#", "x²+", "log()", "sinx + 30°", "t", "a·x", "m", "x km", "1/x", "y = sin(x)", "binomial(x)", "root(x)", "gcd(1)", "3 m + x", "x + 1 s"];
+        out.push(format!("\"graphRows\":{}", arr(rows.iter().map(|s| {
+            let r = expression(s).and_then(|e| qalc::classroom_curve(&e, &o, -5.0, 5.0).map_err(|err| explain(&e, &err)));
+            match r { Ok((x, _)) => format!("[{},{},null]", j(s), x.len()), Err(e) => format!("[{},null,{}]", j(s), j(&e)) }
+        }).collect())));
+
+        let ticks: Vec<String> = [(-10.0, 10.0, 10), (0.0, 1.0, 4), (-6.0, 6.0, 15), (-13.5, 13.5, 16), (0.0, 12.2, 7), (1e6, 2e6, 5), (0.00001, 0.00002, 4), (-1.0, 1.0, 11), (2.1, 12.2, 9), (1e-7, 1e-6, 5), (0.0, 1e7, 6), (5.0, 5.0, 3), (-0.3, 6.3, 12)]
+            .iter()
+            .map(|&(a, b, k)| { let (t, _) = render::ticks((a, b), false, k); format!("[{},{},{},{},{}]", n(a), n(b), k, nums(&t.iter().map(|p| p.0).collect::<Vec<_>>()), strs(&t.iter().map(|p| p.1.clone()).collect::<Vec<_>>())) })
+            .collect();
+        out.push(format!("\"ticks\":{}", arr(ticks)));
+        let eq: Vec<String> = [((-10.0, 10.0), (-6.0, 6.0), 500.0, 600.0), ((-10.0, 10.0), (-6.0, 6.0), 1200.0, 300.0), ((0.0, 1.0), (0.0, 100.0), 300.0, 300.0), ((-1.0, 1.0), (1.0, -1.0), 400.0, 200.0)]
+            .iter()
+            .map(|&(x, y, w, h)| { let (a, b) = render::equal_ranges(x, y, w, h); format!("[{},{},{},{},{},{}]", nums(&[x.0, x.1]), nums(&[y.0, y.1]), n(w), n(h), nums(&[a.0, a.1]), nums(&[b.0, b.1])) })
+            .collect();
+        out.push(format!("\"equalRanges\":{}", arr(eq)));
+        let adj: Vec<String> = [((0.0, 10.0), 0.1, 1.0, 0.0), ((0.0, 10.0), 0.0, 0.5, 0.5), ((0.0, 10.0), 0.0, 2.0, 0.0), ((-3.0, 7.0), -0.25, 1.25, 0.3), ((0.0, 10.0), f64::INFINITY, 1.0, 0.0), ((0.0, 10.0), 0.0, 0.0, 0.5)]
+            .iter()
+            .map(|&(r, s, f, a)| { let o = canvas::adjust(r, s, f, a, false); format!("[{},{},{},{},{}]", nums(&[r.0, r.1]), if s.is_finite() { n(s) } else { "\"inf\"".into() }, n(f), n(a), nums(&[o.0, o.1])) })
+            .collect();
+        out.push(format!("\"adjust\":{}", arr(adj)));
+        let marks = ["x^2 + 1", "x^{10}", "v_0 = a_{ij}", "e^{-t/\\tau_0}", "e^(−x / 2)", "x^\\alpha", "\\int_0^\\infty \\alpha\\Omega", "x^2^3", "x_{}^2", "\\bf{bold}\\it x\\_1 \\{a\\}", "\\foo √x²", "a^", "{x", "x^{2", "\\", "", "Height (cm)", "T_{max}", "m/s^2", "\\Delta t", "x_1^2", "\\sum_i"];
+        out.push(format!("\"mathRuns\":{}", arr(marks.iter().map(|s| format!("[{},{}]", j(s), arr(mathtext::parse(s).iter().map(|r| format!("[{},{},{},{}]", j(&r.text), n(r.scale), n(r.shift), r.stack)).collect()))).collect())));
+
+        // Data tab
+        let many: Vec<Vec<String>> = std::iter::once(vec!["t".to_string(), "v".to_string()]).chain((1..=30).map(|i| vec![i.to_string(), format!("{}", (i * i % 17) as f64 + 0.5 * i as f64)])).collect();
+        let grids = [
+            g(&[&["X", "Y"], &["1", "2.1"], &["2", "3.9"], &["3", "6.2"], &["4", "7.8"], &["5", "10.1"], &["6", "12.2"], &["", ""]]),
+            g(&[&["X", "Y"], &["1", "1,5"], &["2", "oops"], &["3", "5,5"], &["NaN", "7"], &["", ""]]),
+            g(&[&["X", "Y"], &["1", "3"], &["2", "3"], &["3", "3"]]),
+            g(&[&["X", "Y"], &["1", "4"], &["", ""]]),
+            many,
+            g(&[&["a", "b"], &["-2", "4"], &["-1", "1"], &["0", "0"], &["1", "1"], &["2", "4"]]),
+            g(&[&["a", "b"], &["1", "1"], &["2", "8"], &["3", "27"], &["4", "64"], &["5", "125"]]),
+            g(&[&["a", "b"], &["1", "2"], &["2", "2"], &["2", "3"], &["3", "3"], &["3", "3"]]),
+            g(&[&["big", "bigger"], &["1e200", "2e200"], &["2e200", "4e200"], &["3e200", "6e200"]]),
+            g(&[&["Height (cm)", "", "m", "A", "A"], &["1", "2", "3", "4", "5"], &["2", "", "4", "x", "6"]]),
+            g(&[&["X", "Y"], &["", ""], &["", ""]]),
+            g(&[&["X", "Y"], &["1", "2"], &["", "3"], &["4", ""]]),
+            g(&[&["x"], &["1"], &["1"], &["1"], &["2"]]),
+        ];
+        let mut data = vec![];
+        for gr in &grids {
+            let width = gr[0].len();
+            let table = table_columns(gr);
+            let named = arr(table.named.iter().map(|(n1, v)| format!("[{},{}]", j(n1), nums(v))).collect());
+            let mut views = vec![];
+            for x in std::iter::once(None).chain((0..width).map(Some)) {
+                for y in 0..width {
+                    let ps = pairs(gr, x, y);
+                    let mut charts = vec![];
+                    for c in 0..4u32 {
+                        let (mut f, s, skipped) = data_chart(gr, Chart::from_index(c), x, y);
+                        let a = f.axes();
+                        let series = match &a.series[0].data {
+                            Data::Line { x, y } => format!("{{\"kind\":\"line\",\"x\":{},\"y\":{},\"line\":{},\"marker\":{}}}", nums(x), nums(y), a.series[0].line != LineStyle::None, a.series[0].marker != Marker::None),
+                            Data::Bar { x, y, width } => format!("{{\"kind\":\"bar\",\"x\":{},\"y\":{},\"width\":{}}}", nums(x), nums(y), n(*width)),
+                            _ => panic!("chart kind"),
+                        };
+                        charts.push(format!(
+                            "{{\"xlabel\":{},\"ylabel\":{},\"skipped\":{skipped},\"series\":{series},\"count\":{},\"statSkipped\":{},\"mean\":{},\"median\":{},\"min\":{},\"max\":{},\"std\":{},\"sum\":{},\"q1\":{},\"q3\":{},\"popStd\":{},\"modes\":{}}}",
+                            j(&a.xlabel), j(&a.ylabel), s.count, s.skipped, on(s.mean), on(s.median), on(s.min), on(s.max), on(s.std), on(s.sum), on(s.q1), on(s.q3), on(s.pop_std), nums(&s.modes)
+                        ));
+                    }
+                    let fits: Vec<String> = (1..=5).map(|k| match fit(&ps, FitKind::from_index(k)) {
+                        Ok(f) => format!("{{\"equation\":{},\"r2\":{},\"at\":{}}}", j(&f.equation()), on(f.r2), nums(&ps.iter().map(|p| f.at(p.0)).collect::<Vec<_>>())),
+                        Err(e) => format!("{{\"error\":{}}}", j(&e)),
+                    }).collect();
+                    let ls = match least_squares(&ps) { Ok((m, b)) => nums(&[m, b]), Err(e) => j(e) };
+                    views.push(format!(
+                        "{{\"x\":{},\"y\":{y},\"pairs\":{},\"pearson\":{},\"spearman\":{},\"cov\":{},\"leastSquares\":{ls},\"fits\":{},\"charts\":{}}}",
+                        x.map_or("null".into(), |v| v.to_string()), arr(ps.iter().map(|p| nums(&[p.0, p.1])).collect()), on(pearson(&ps)), on(spearman(&ps)), on(covariance(&ps)), arr(fits), arr(charts)
+                    ));
+                }
+            }
+            data.push(format!("{{\"grid\":{},\"table\":{{\"named\":{named},\"unnamed\":{},\"misaligned\":{}}},\"views\":{}}}", grid(gr), strs(&table.unnamed), table.misaligned, arr(views)));
+        }
+        out.push(format!("\"data\":{}", arr(data)));
+
+        // key points of real engine samples
+        let curves = ["x²", "(x-1)(x-3)", "x³ - 3x", "sin(x)", "cos(x)", "tan(x)", "1/x", "ln(x)", "sqrt(x)", "e^x", "abs(x)", "floor(x)", "2x + 1", "3", "sin(x)/x", "x^4 - 4x^2", "1/(x^2 - 1)", "(x-1)^3 + 2", "cos(x - 1) + 0.3(x - 1)^2"];
+        let rad = qalc::Options::default();
+        let mut keys = vec![];
+        for e in curves {
+            let (x0, y0) = qalc::classroom_curve(e, &rad, -6.0, 6.0).unwrap();
+            let (x, y): (Vec<f64>, Vec<f64>) = x0.iter().zip(&y0).step_by(4).map(|(a, b)| (*a, *b)).unzip();
+            let k = analysis::analyze(&x, &y);
+            let (nx, ny) = (arr(x.iter().map(|v| n(*v)).collect()), arr(y.iter().map(|v| if v.is_infinite() { format!("\"{v}\"") } else { n(*v) }).collect()));
+            let body = match k {
+                None => "null".to_string(),
+                Some(k) => format!("{{\"max\":{},\"min\":{},\"roots\":{},\"inflection\":{},\"yInt\":{},\"vertex\":{},\"symmetry\":{}}}", points(&k.max), points(&k.min), points(&k.roots), points(&k.inflection), k.y_int.map_or("null".into(), |p: [f64; 2]| nums(&p)), k.vertex.map_or("null".into(), |p: [f64; 2]| nums(&p)), j(&k.symmetry.text())),
+            };
+            let (bx, by) = crate::plot::builtins::break_jumps(&x, &y);
+            keys.push(format!("{{\"expr\":{},\"x\":{nx},\"y\":{ny},\"breaks\":{},\"points\":{},\"keys\":{body}}}", j(e), bx.iter().filter(|v| v.is_nan()).count(), by.len()));
+        }
+        out.push(format!("\"keyPoints\":{}", arr(keys)));
+
+        // spreadsheets, read as the Data tab reads them
+        let root = env!("CARGO_MANIFEST_DIR");
+        let mut books = vec![];
+        for f in ["tests/data/book.xlsx", "tests/data/book.xls", "tests/data/book.ods", "demo/weather.csv"] {
+            let p = std::path::PathBuf::from(root).join(f);
+            let names = if io::is_book(&p) { io::sheet_names(&p).unwrap() } else { vec![] };
+            let mut sheets = vec![];
+            for s in if names.is_empty() { vec![None] } else { names.iter().map(|n| Some(n.as_str())).collect() } {
+                let cells = io::read_cells(&p, s, None).unwrap();
+                sheets.push(format!("[{},{}]", s.map_or("null".to_string(), j), grid(&cells)));
+            }
+            books.push(format!("{{\"file\":{},\"sheets\":{}}}", j(f), arr(sheets)));
+        }
+        out.push(format!("\"books\":{}", arr(books)));
+
+        std::fs::write(format!("{root}/web/test/parity-model.json"), format!("{{\n{}\n}}\n", out.join(",\n"))).unwrap();
+    }
+
     fn linear_regression(grid: &[Vec<String>], xcol: Option<usize>, ycol: usize) -> Result<(f64, f64), &'static str> {
         least_squares(&pairs(grid, xcol, ycol))
     }

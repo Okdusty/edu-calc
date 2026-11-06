@@ -207,6 +207,15 @@ dialog .buttons button { min-width: 84px; min-height: 40px; }
 
 .loading { color: var(--dim); }
 
+dialog.settings { width: min(720px, calc(100vw - 32px)); max-width: none; }
+.settings-tabs { margin-bottom: 8px; }
+.settings-tabs button { padding: 0 14px; }
+.settings-hint { font-size: .85em; margin: 0 0 8px; }
+.settings-text { width: 100%; height: min(46dvh, 420px); resize: vertical; font: 13px/1.4 "DejaVu Sans Mono", Consolas, monospace; background: var(--view); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; white-space: pre; overflow: auto; }
+.settings-problems { font-size: .85em; white-space: pre-wrap; margin: 6px 0; }
+dialog.settings .buttons { flex-wrap: wrap; justify-content: flex-start; }
+dialog.settings .buttons .spacer { flex: 1; }
+
 @media (max-width: 760px) {
   .headerbar { grid-template-columns: auto minmax(0, 1fr); gap: 4px; padding: 4px; }
   .header-start { display: none; }

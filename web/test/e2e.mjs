@@ -11,7 +11,7 @@ mkdirSync(shots, { recursive: true });
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.wasm': 'application/wasm', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
 // SITE_URL: test what's published instead of web/dist
 // the local server can misbehave on demand: requests for the engine it answers 503 while these say so
-const engineTrouble = { failNext: 0, down: false, requests: 0 };
+const engineTrouble = { failNext: 0, down: false, requests: 0, newVersion: '' };
 const server = process.env.SITE_URL ? null : createServer((req, res) => {
   const path = decodeURIComponent(new URL(req.url, 'http://x').pathname);
   if (path.endsWith('qalc.wasm')) {
@@ -26,11 +26,23 @@ const server = process.env.SITE_URL ? null : createServer((req, res) => {
   let file = join(dist, path.slice('/edu-calc/'.length));
   if (path.endsWith('/')) file = join(file, 'index.html');
   try { statSync(file); } catch { res.writeHead(404).end(); return; }
-  res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream' }).end(readFileSync(file));
+  let body = readFileSync(file);
+  if (path.endsWith('/sw.js') && engineTrouble.newVersion) body = body.toString().replace(/const VERSION = '([^']*)'/, `const VERSION = '$1${engineTrouble.newVersion}'`);
+  res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream' }).end(body);
 });
 if (server) await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const url = process.env.SITE_URL ?? `http://127.0.0.1:${server.address().port}/edu-calc/`;
 
+let serverStopped = false;
+// the desktop's own defaults, as a file from that app would hold them
+const DESKTOP_INI = (() => {
+  try {
+    const src = readFileSync(new URL('../../src/gui/config.rs', import.meta.url), 'utf8');
+    return /pub const DEFAULT_INI: &str = "\\\n([^"]*)";/.exec(src)?.[1] ?? '';
+  } catch {
+    return '';
+  }
+})();
 const browser = await chromium.launch();
 const context = await browser.newContext({ viewport: { width: 1366, height: 860 }, deviceScaleFactor: 2, acceptDownloads: true, permissions: ['clipboard-read', 'clipboard-write'] });
 const page = await context.newPage();
@@ -42,8 +54,9 @@ page.on('dialog', (d) => d.dismiss());
 
 let step = 'start';
 const steps = [];
-const check = (name) => { step = name; steps.push(name); console.log(`- ${name}`); };
-const shot = (name) => page.screenshot({ path: join(shots, `${name}.png`) });
+let pass = '';
+const check = (name) => { step = `${pass}${name}`; steps.push(step); console.log(`- ${step}`); };
+const shot = (name) => page.screenshot({ path: join(shots, `${pass ? 'offline-' : ''}${name}.png`) });
 const until = (f, arg) => page.waitForFunction(f, arg, { timeout: 30000 });
 const text = (sel) => page.locator(sel).first().innerText();
 const key = (face) => page.locator('.keypad button', { hasText: new RegExp(`^${face.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }).first().click();
@@ -54,9 +67,8 @@ const tab = (name) => page.locator('.tabs button', { hasText: name }).click();
 const statsHas = (t) => until((want) => document.querySelector('.stats').textContent.includes(want), t);
 
 try {
-  check('loads and starts the engine');
-  await page.goto(url);
-  await ready();
+  // every feature, through its real widgets; run online, then again with the network gone
+  const features = async () => {
   assert.equal(await page.title(), 'EduCalc');
   assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), 'light', 'light by default');
   assert.equal(await page.locator('text=Advanced').count(), 0, 'no Advanced mode on the web');
@@ -327,6 +339,23 @@ try {
   assert.ok(await page.locator('.sheets').isVisible(), 'a workbook offers its sheets');
   await page.locator('.sheets').selectOption('Other');
   await until(() => window.app.table.g[0][0] === 'A' && window.app.table.g[1][0] === '9');
+  // the desktop's own test files, cell for cell (web/test/parity-model.json)
+  const model = JSON.parse(readFileSync(new URL('parity-model.json', import.meta.url)));
+  for (const { file, sheets } of model.books) {
+    if (await page.evaluate(() => window.app.table.dirty)) await page.evaluate(() => { window.app.table.dirty = false; });
+    await page.locator('.file').setInputFiles(new URL(`../../${file}`, import.meta.url).pathname);
+    for (const [name, want] of sheets) {
+      if (name) await page.locator('.sheets').selectOption(name);
+      // a header row names the columns, as on the desktop
+      const firstData = want.findIndex((r) => r.some((c) => /^-?[\d.]+(e-?\d+)?$/i.test(c)));
+      await until(([names, rows]) => JSON.stringify(window.app.table.g[0].slice(0, names.length)) === JSON.stringify(names) && window.app.table.g.length >= rows, [want[firstData - 1] ?? [], want.length - Math.max(firstData, 0) + 1]);
+      const got = await page.evaluate(() => window.app.table.g);
+      want.slice(Math.max(firstData, 0)).forEach((row, i) => {
+        assert.deepEqual(got[i + 1].slice(0, row.length), row, `${file} ${name} row ${i}`);
+      });
+    }
+  }
+  await page.evaluate(() => { window.app.table.setGrid([['A'], ['9']], [1, 0]); window.app.table.changed(); window.app.table.dirty = false; });
   const [dl] = await Promise.all([page.waitForEvent('download'), (async () => { await page.locator('[data-do="export"]').click(); await page.locator('dialog button', { hasText: 'CSV' }).click(); })()]);
   assert.equal(dl.suggestedFilename(), 'data.csv');
   assert.equal(readFileSync(await dl.path(), 'utf8'), 'A\n9\n');
@@ -344,6 +373,15 @@ try {
     else assert.match(data.toString(), /^<svg .*<\/svg>\s*$/s);
     assert.ok(data.length > 1000);
   }
+
+  check('plot labels: math markup, as on the desktop');
+  await cell(0, 1).fill('v_0');
+  await page.waitForTimeout(350);
+  const [markup] = await Promise.all([page.waitForEvent('download'), (async () => { await page.locator('.header-end button[aria-label="Menu"]').click(); await page.locator('.menu button', { hasText: 'Export chart' }).click(); await page.locator('dialog button', { hasText: 'SVG' }).click(); })()]);
+  const svgText = readFileSync(await markup.path()).toString();
+  assert.match(svgText, />v<\/text>/, 'the base');
+  assert.match(svgText, />0<\/text>/, 'the subscript, its own smaller run');
+  await cell(0, 1).fill('Y');
 
   check('history stays pinned to the newest answer as space changes');
   await tab('Calculator');
@@ -408,6 +446,58 @@ try {
   await page.keyboard.press('Control+Shift+D');
   assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), 'light');
 
+  check('settings: qcalcp.ini and style.css, also a desktop file as it is');
+  const openSettings = async () => { await page.locator('.header-end button[aria-label="Menu"]').click(); await page.locator('.menu button', { hasText: 'Settings' }).click(); };
+  const save = () => page.locator('dialog.settings button', { hasText: 'Save' }).click();
+  await tab('Graph');
+  await openSettings();
+  assert.match(await page.locator('.settings-text').inputValue(), /\[theme\]/);
+  await page.fill('.settings-text', '[theme]\nplot_bg=#102030\nplot_fg=white\nfont_size=20\npalette=#ff0000;#00ff00\n[input]\nzoom_step=2\n[keys]\nkeypad=F8\n');
+  await shot('15-settings');
+  await save();
+  await until(() => !document.querySelector('dialog.settings'));
+  const corner = () => page.evaluate(() => {
+    const c = document.querySelector('.view:not([hidden]) canvas');
+    return [...c.getContext('2d').getImageData(1, 1, 1, 1).data].slice(0, 3);
+  });
+  await page.waitForTimeout(100);
+  assert.deepEqual(await corner(), [16, 32, 48], 'plot colors from the ini');
+  assert.equal(await page.evaluate(() => window.app.graph.wheelStep), 2, 'zoom step from the ini');
+  await page.keyboard.press('F8');
+  assert.ok(await page.locator('.keypad').isHidden(), 'keys from the ini');
+  await page.keyboard.press('F8');
+  await page.keyboard.press('F9');
+  assert.ok(await page.locator('.keypad').isVisible(), 'the old key is free');
+  await page.reload();
+  await ready();
+  await page.waitForTimeout(200);
+  assert.deepEqual(await corner(), [16, 32, 48], 'settings survive a reload');
+  await openSettings();
+  await page.fill('.settings-text', '[theme]\nplot_fg=nope\n[keys]\nmine=<Alt>x\n');
+  await save();
+  await until(() => document.querySelector('.settings-problems').textContent.includes('plot_fg=nope'));
+  assert.match(await text('.settings-problems'), /mine: no such action/);
+  await page.locator('dialog.settings button', { hasText: 'Cancel' }).click();
+  await openSettings();
+  await page.locator('dialog.settings button[role="tab"]', { hasText: 'style.css' }).click();
+  await page.fill('.settings-text', '.simple-entry { color: rgb(1, 2, 3); }');
+  await save();
+  await tab('Calculator');
+  await until(() => getComputedStyle(document.querySelector('.simple-entry')).color === 'rgb(1, 2, 3)');
+  if (DESKTOP_INI) {
+    await openSettings();
+    await page.fill('.settings-text', DESKTOP_INI);
+    await save();
+    await until(() => !document.querySelector('dialog.settings'));
+  }
+  await openSettings();
+  await page.locator('dialog.settings button', { hasText: 'Defaults' }).click();
+  await page.locator('dialog.settings button[role="tab"]', { hasText: 'style.css' }).click();
+  await page.locator('dialog.settings button', { hasText: 'Defaults' }).click();
+  await save();
+  await until(() => !document.querySelector('dialog.settings') && getComputedStyle(document.querySelector('.simple-entry')).color !== 'rgb(1, 2, 3)');
+  assert.equal(await page.evaluate(() => window.app.graph.wheelStep), 1.15);
+
   check('keypad: F9, height, and keeping it');
   await page.keyboard.press('F9');
   assert.ok(await page.locator('.keypad').isHidden());
@@ -427,41 +517,6 @@ try {
   assert.equal(await cell(4, 1).inputValue(), '9', 'the table');
   assert.equal(await page.locator('.history-card').count(), 1, 'the history');
   assert.equal(await page.locator('.graph-row input[type="text"]').first().inputValue(), '1/x', 'the functions');
-
-  check('offline: the whole app, with the network gone');
-  await page.evaluate(() => navigator.serviceWorker.ready);
-  await until(() => navigator.serviceWorker.controller !== null || (location.reload(), false)).catch(() => {});
-  await page.waitForTimeout(500);
-  await until(async () => (await caches.keys()).some((k) => k.startsWith('educalc-')));
-  await context.setOffline(true);
-  await page.reload();
-  await ready();
-  assert.equal(await page.evaluate(() => navigator.onLine), false);
-  await tab('Calculator');
-  await page.fill('.input-row input', 'sqrt(144) + mean(X)');
-  await previewIs('= 29/2  ≈ 14.5');
-  await key('Enter');
-  await until(() => document.querySelectorAll('.history-card').length === 2);
-  await tab('Graph');
-  await page.locator('.graph-row input[type="text"]').first().fill('y = x³ − 3x');
-  await until(() => window.app.graph.axes.series.length >= 1 && window.app.graph.axes.series[0].label.includes('x³'));
-  await page.locator('.board-tools button').nth(3).click();
-  await page.waitForTimeout(300);
-  await shot('08-offline-graph');
-  await page.locator('.header-end button', { hasText: 'Functions' }).click();
-  assert.ok(await page.locator('.catalog-row').count() > 50);
-  await page.keyboard.press('Escape');
-  await tab('Data');
-  await page.locator('.file').setInputFiles({ name: 'book.xlsx', mimeType: 'application/octet-stream', buffer: Buffer.from(book) }).catch(() => {});
-  await until(() => window.app.table.g[0][0] === 'Height');
-  await statsHas('n = 2');
-  await page.locator('[data-do="addRow"]').click();
-  await shot('09-offline-data');
-  const offlineNav = await context.newPage();
-  await offlineNav.goto(url);
-  await offlineNav.waitForFunction(() => window.app?.engine?.ready === true, undefined, { timeout: 30000 });
-  await offlineNav.close();
-  await context.setOffline(false);
 
   check('a phone-sized screen');
   const phoneLayout = (name) => page.evaluate(() => {
@@ -510,6 +565,14 @@ try {
   await page.waitForTimeout(250);
   await shot('13-board-graph');
 
+  await page.setViewportSize({ width: 1366, height: 860 });
+  };
+
+  check('loads and starts the engine');
+  await page.goto(url);
+  await ready();
+  await features();
+
   if (!process.env.SITE_URL) {
     check('the server hiccups: the engine and the offline copy still arrive');
     const flaky = await browser.newContext({ viewport: { width: 1366, height: 860 } });
@@ -547,6 +610,14 @@ try {
   const t = await touchContext.newPage();
   t.on('pageerror', (e) => problems.push(`touch pageerror: ${e.message}`));
   await t.goto(url);
+  await t.waitForFunction(() => window.app?.engine?.ready === true);
+  // the offline copy, then fingers on it with the network gone
+  await t.evaluate(() => navigator.serviceWorker.ready);
+  await t.waitForFunction(() => navigator.serviceWorker.controller !== null, undefined, { timeout: 60000 }).catch(() => t.reload());
+  await t.waitForFunction(async () => (await caches.keys()).some((k) => k.startsWith('educalc-')));
+  await t.waitForTimeout(500);
+  await touchContext.setOffline(true);
+  await t.reload();
   await t.waitForFunction(() => window.app?.engine?.ready === true);
   assert.equal(await t.inputValue('.input-row input'), '');
   assert.equal(await t.locator('.input-row input').evaluate((e) => e.inputMode), 'none', 'the keypad replaces the on-screen keyboard');
@@ -606,6 +677,42 @@ try {
   assert.ok(await t.locator('.keypad').evaluate((e) => e.offsetHeight) > kh + 40, 'dragging the grip resizes the keypad');
   await touchContext.close();
 
+  if (!process.env.SITE_URL) {
+    check('an update replaces the offline copy');
+    await page.evaluate(() => navigator.serviceWorker.ready);
+    await until(async () => (await caches.keys()).some((k) => k.startsWith('educalc-')));
+    const before = await page.evaluate(() => caches.keys());
+    engineTrouble.newVersion = '-next';
+    await page.evaluate(async () => (await navigator.serviceWorker.getRegistration()).update());
+    await until(async () => { const k = await caches.keys(); return k.length === 1 && k[0].endsWith('-next'); });
+    assert.notDeepEqual(await page.evaluate(() => caches.keys()), before);
+    await page.reload();
+    await ready();
+    await page.fill('.input-row input', '2 + 3');
+    await previewIs('= 5');
+    await page.fill('.input-row input', '');
+  }
+
+  check('offline: the network really goes away');
+  await page.evaluate(() => navigator.serviceWorker.ready);
+  await until(() => navigator.serviceWorker.controller !== null).catch(() => page.reload());
+  await until(async () => (await caches.keys()).some((k) => k.startsWith('educalc-')));
+  await page.waitForTimeout(500);
+  if (server) { server.closeAllConnections(); await new Promise((r) => server.close(r)); serverStopped = true; }
+  await context.setOffline(true);
+  assert.equal(await page.evaluate(() => navigator.onLine), false);
+  // from a clean slate: nothing left over from the online pass, only the offline copy
+  await page.evaluate(() => localStorage.clear());
+  await page.setViewportSize({ width: 1366, height: 860 });
+  await page.reload();
+  await ready();
+  const offlineTab = await context.newPage();
+  await offlineTab.goto(url);
+  await offlineTab.waitForFunction(() => window.app?.engine?.ready === true, undefined, { timeout: 30000 });
+  await offlineTab.close();
+  pass = 'offline: ';
+  await features();
+
   assert.deepEqual(problems, [], 'no page errors');
   console.log(`\nAll ${steps.length} checks passed.`);
 } catch (e) {
@@ -616,5 +723,5 @@ try {
   process.exitCode = 1;
 } finally {
   await browser.close();
-  server?.close();
+  if (!serverStopped) server?.close();
 }

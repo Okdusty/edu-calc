@@ -22,7 +22,7 @@ jobs:
         with:
           node-version: "22"
       - name: Logic tests
-        run: node --test web/test/logic.test.mjs
+        run: node --test web/test/logic.test.mjs web/test/parity-model.test.mjs
       - name: Build tools
         run: sudo apt-get update && sudo apt-get install -y gettext pkg-config
       - uses: mymindstorm/setup-emsdk@v14

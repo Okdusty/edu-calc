@@ -1027,7 +1027,22 @@
 {"expr":"100 / 3","set":"decimal","input":"100/3","result":"33.33333333","approx":"","freeVars":[]},
 {"expr":"2 / 3 + 1 / 3","set":"rad","input":"2/3 + 1/3","result":"1","approx":"","freeVars":[]},
 {"expr":"2 / 3 + 1 / 3","set":"deg","input":"2/3 + 1/3","result":"1","approx":"","freeVars":[]},
-{"expr":"2 / 3 + 1 / 3","set":"decimal","input":"2/3 + 1/3","result":"1","approx":"","freeVars":[]}
+{"expr":"2 / 3 + 1 / 3","set":"decimal","input":"2/3 + 1/3","result":"1","approx":"","freeVars":[]},
+{"expr":"10 EUR to USD","set":"rad","input":"10 € → USD","result":"$11.41500000","approx":"","freeVars":[]},
+{"expr":"10 EUR to USD","set":"deg","input":"10 € → USD","result":"$11.41500000","approx":"","freeVars":[]},
+{"expr":"10 EUR to USD","set":"decimal","input":"10 € → USD","result":"$11.41500000","approx":"","freeVars":[]},
+{"expr":"100 USD to JPY","set":"rad","input":"100 $ → JPY","result":"¥16184.97426","approx":"","freeVars":[]},
+{"expr":"100 USD to JPY","set":"deg","input":"100 $ → JPY","result":"¥16184.97426","approx":"","freeVars":[]},
+{"expr":"100 USD to JPY","set":"decimal","input":"100 $ → JPY","result":"¥16184.97426","approx":"","freeVars":[]},
+{"expr":"1 GBP to EUR","set":"rad","input":"1 £ → EUR","result":"€1.169071056","approx":"","freeVars":[]},
+{"expr":"1 GBP to EUR","set":"deg","input":"1 £ → EUR","result":"€1.169071056","approx":"","freeVars":[]},
+{"expr":"1 GBP to EUR","set":"decimal","input":"1 £ → EUR","result":"€1.169071056","approx":"","freeVars":[]},
+{"expr":"50 EUR to TRY","set":"rad","input":"50 € → TRY","result":"₺2671.110000","approx":"","freeVars":[]},
+{"expr":"50 EUR to TRY","set":"deg","input":"50 € → TRY","result":"₺2671.110000","approx":"","freeVars":[]},
+{"expr":"50 EUR to TRY","set":"decimal","input":"50 € → TRY","result":"₺2671.110000","approx":"","freeVars":[]},
+{"expr":"1 BTC to USD","set":"rad","input":"1 ₿ → USD","result":"$63299.74337","approx":"","freeVars":[]},
+{"expr":"1 BTC to USD","set":"deg","input":"1 ₿ → USD","result":"$63299.74337","approx":"","freeVars":[]},
+{"expr":"1 BTC to USD","set":"decimal","input":"1 ₿ → USD","result":"$63299.74337","approx":"","freeVars":[]}
 ],"curves":[
 {"expr":"x²","set":"rad","points":2001,"xs":0,"ys":[4e2,3.24e2,2.56e2,1.96e2,1.44e2,1e2,6.4e1,3.6e1,1.6e1,4e0,0e0,4e0,1.6e1,3.6e1,6.4e1,1e2,1.44e2,1.96e2,2.56e2,3.24e2,4e2]},
 {"expr":"x²","set":"deg","points":2001,"xs":0,"ys":[4e2,3.24e2,2.56e2,1.96e2,1.44e2,1e2,6.4e1,3.6e1,1.6e1,4e0,0e0,4e0,1.6e1,3.6e1,6.4e1,1e2,1.44e2,1.96e2,2.56e2,3.24e2,4e2]},

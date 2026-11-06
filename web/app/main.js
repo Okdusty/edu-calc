@@ -179,6 +179,21 @@ function showPopover(button, pop) {
 
 // ---- the app -------------------------------------------------------------------------------------
 
+/** A CSS color as [r, g, b], or null; the browser is the parser. */
+function cssColor(text) {
+  const c = document.createElement('canvas').getContext('2d');
+  // an invalid color leaves fillStyle as it was, whatever that is
+  c.fillStyle = '#000000';
+  c.fillStyle = text.trim();
+  const v = c.fillStyle;
+  c.fillStyle = '#ffffff';
+  c.fillStyle = text.trim();
+  if (c.fillStyle !== v) return null;
+  if (v.startsWith('#')) return [1, 3, 5].map((i) => parseInt(v.slice(i, i + 2), 16));
+  const m = /rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/.exec(v);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
 const TABS = ['Calculator', 'Graph', 'Data'];
 const CALC_ONLY = ['÷', '×', '+', '=', '@slot'];
 const ROW_COLORS = [[36, 105, 205], [205, 66, 64], [25, 139, 91], [139, 72, 192], [188, 112, 15], [17, 134, 151]];
@@ -209,6 +224,9 @@ class App {
     this.buildGraph();
     this.buildData();
     this.buildKeypad();
+    this.userCss = h('style', { id: 'user-css' });
+    document.head.append(this.userCss);
+    this.applySettings(store.text('qcalcp.ini') || L.DEFAULT_INI, store.text('style.css'), false);
     this.applyAppearance();
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => this.applyAppearance());
     this.bindKeys();
@@ -276,6 +294,7 @@ class App {
       press({ text: 'Fullscreen', role: 'menuitem', onclick: close(() => this.toggleFullscreen()) }),
       press({ text: 'Export chart…', role: 'menuitem', onclick: close(() => this.exportChart()) }),
       press({ text: 'Clear history…', role: 'menuitem', onclick: close(() => this.clearHistory()) }),
+      press({ text: 'Settings…', role: 'menuitem', onclick: close(() => this.openSettings()) }),
     );
     if (this.installPrompt) pop.append(press({ text: 'Install app…', role: 'menuitem', onclick: close(() => { this.installPrompt.prompt(); this.installPrompt = null; }) }));
     pop.append(h('hr'), h('div', { class: 'menu-title', text: 'Appearance' }));
@@ -319,7 +338,7 @@ class App {
       e.preventDefault();
       groups.flatMap((g) => g.rows).find(({ row }) => !row.hidden)?.row.click();
     });
-    const shown = showPopover(this.functions, h('div', { class: 'catalog' }, search, list));
+    const shown = showPopover(this.functions, h('div', { class: 'catalog simple-catalog' }, search, list));
     // no on-screen keyboard popping up by itself on a touch screen
     if (shown && !matchMedia('(pointer: coarse)').matches) search.focus();
   }
@@ -343,6 +362,75 @@ class App {
     store.set('appearance', mode);
     // the page's early script reads this before main.js runs
     this.applyAppearance();
+    // and the ini says the same, like the desktop rewriting its file
+    this.iniText = L.withAppearance(this.iniText ?? L.DEFAULT_INI, mode);
+    if (this.iniText !== L.DEFAULT_INI) store.setText('qcalcp.ini', this.iniText);
+  }
+
+  /** qcalcp.ini and style.css in effect: plot colors and font, zoom step, keys, appearance, the page's look. */
+  applySettings(ini, css, fromUser = true) {
+    this.iniText = ini;
+    this.cssText = css;
+    this.config = L.parseConfig(ini, cssColor);
+    this.userCss.textContent = css;
+    for (const board of [this.graph, this.dataBoard]) {
+      board.plotOverrides = this.config.plot;
+      board.wheelStep = this.config.zoomStep;
+      board.redraw();
+    }
+    if (fromUser && this.config.appearance && this.config.appearance !== this.appearance) {
+      this.appearance = this.config.appearance;
+      store.set('appearance', this.appearance);
+      this.applyAppearance();
+    }
+    return this.config.warnings;
+  }
+
+  /** The desktop's two settings files, edited here. A desktop file can be opened or pasted as it is. */
+  openSettings() {
+    const files = { 'qcalcp.ini': this.iniText, 'style.css': this.cssText };
+    let current = 'qcalcp.ini';
+    const area = h('textarea', { class: 'settings-text', spellcheck: false, 'aria-label': 'Settings file', value: files[current] });
+    const hint = h('p', { class: 'settings-hint' });
+    const problems = h('div', { class: 'settings-problems error' });
+    const tabs = {};
+    const show = (name) => {
+      files[current] = area.value;
+      current = name;
+      area.value = files[name];
+      for (const [n, b] of Object.entries(tabs)) b.setAttribute('aria-selected', String(n === name));
+      hint.textContent = name === 'style.css'
+        ? 'CSS over the page, applied on Save. Names: .keypad button, .simple-entry, .simple-preview, .simple-result, .simple-card, .simple-keypad, .simple-side, .simple-catalog, .graph-row, .board, .table-scroll.'
+        : 'Plot colors and font, zoom step and key bindings. A file from the desktop app works as it is; keys for Advanced have no effect here.';
+    };
+    for (const name of Object.keys(files)) tabs[name] = h('button', { type: 'button', text: name, role: 'tab', onclick: () => show(name) });
+    const pick = h('input', { type: 'file', hidden: true, accept: '.ini,.css,.txt,text/*' });
+    pick.addEventListener('change', async () => {
+      if (pick.files[0]) area.value = await pick.files[0].text();
+      pick.value = '';
+    });
+    const d = h('dialog', { class: 'settings' }, h('h2', { text: 'Settings' }), h('div', { class: 'linked settings-tabs' }, ...Object.values(tabs)), hint, area, problems, pick);
+    const close = () => d.close();
+    const row = h('div', { class: 'buttons' },
+      h('button', { type: 'button', text: 'Open file…', onclick: () => pick.click() }),
+      h('button', { type: 'button', text: 'Download', onclick: () => download(current, new Blob([area.value], { type: 'text/plain' })) }),
+      h('button', { type: 'button', text: 'Defaults', onclick: () => { area.value = current === 'qcalcp.ini' ? L.DEFAULT_INI : ''; } }),
+      h('span', { class: 'spacer' }),
+      h('button', { type: 'button', text: 'Cancel', onclick: close }),
+      h('button', { type: 'button', text: 'Save', class: 'suggested', onclick: () => {
+        files[current] = area.value;
+        store.setText('qcalcp.ini', files['qcalcp.ini']);
+        store.setText('style.css', files['style.css']);
+        const warnings = this.applySettings(files['qcalcp.ini'], files['style.css']);
+        // what's wrong stays in view, like the desktop's console; everything else is already applied
+        problems.textContent = warnings.join('\n');
+        if (!warnings.length) close();
+      } }));
+    d.append(row);
+    d.addEventListener('close', () => { d.remove(); this.focus(); });
+    document.body.append(d);
+    show(current);
+    d.showModal();
   }
 
   applyAppearance() {
@@ -381,16 +469,21 @@ class App {
   }
 
   bindKeys() {
+    const actions = {
+      run: () => this.run(),
+      keypad: () => this.toggleKeypad(),
+      data: () => this.select('Data'),
+      export: () => this.exportChart(),
+      reset_view: () => (this.tab === 'Data' ? this.dataBoard : this.graph).reset(),
+      dark: () => this.setAppearance(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'),
+      fullscreen: () => this.toggleFullscreen(),
+      clear_history: () => this.clearHistory(),
+    };
     window.addEventListener('keydown', (e) => {
-      const ctrl = e.ctrlKey || e.metaKey;
       if (e.key === 'Escape') { closePopover(); return; }
-      if (e.key === 'F9') { e.preventDefault(); this.toggleKeypad(); }
-      else if (e.key === 'F5' || (ctrl && e.key === 'Enter')) { e.preventDefault(); this.run(); }
-      else if (ctrl && e.key === '0') { e.preventDefault(); (this.tab === 'Data' ? this.dataBoard : this.graph).reset(); }
-      else if (ctrl && e.key.toLowerCase() === 'e') { e.preventDefault(); this.exportChart(); }
-      else if (ctrl && e.shiftKey && e.key.toLowerCase() === 'd') { e.preventDefault(); this.setAppearance(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); }
-      else if (ctrl && e.key.toLowerCase() === 'd') { e.preventDefault(); this.select('Data'); }
-      else if (e.key === 'F11') { e.preventDefault(); this.toggleFullscreen(); }
+      if (document.querySelector('dialog[open]')) return;
+      const hit = this.config.keys.find(([, a]) => L.accelMatches(a, e));
+      if (hit) { e.preventDefault(); actions[hit[0]](); }
     });
     window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); this.installPrompt = e; });
   }
@@ -404,10 +497,10 @@ class App {
   buildKeypad() {
     const wrap = $('.keypad-wrap');
     const grip = h('div', { class: 'keypad-grip', tabIndex: 0, title: 'Drag up or down to resize the keypad. Arrow keys adjust height; double-click or Home resets.' }, h('span'));
-    this.keypad = h('div', { class: 'keypad' });
+    this.keypad = h('div', { class: 'keypad simple-keypad' });
     wrap.append(grip, this.keypad);
     this.calcKeys = [];
-    const side = h('div', { class: 'side-keys' });
+    const side = h('div', { class: 'side-keys simple-side' });
     this.pageButtons = {};
     const functions = h('div', { class: 'key-grid functions' });
     const showPage = (name) => {
@@ -524,11 +617,11 @@ class App {
     this.clearButton = press({ class: 'flat clear-history', html: `${svg(ICON.trash)}<span>Clear history</span>`, title: 'Delete the saved answers', hidden: true, onclick: () => this.clearHistory() });
     this.history = h('div', { class: 'history' });
     this.historyScroll = h('div', { class: 'history-scroll' }, this.history);
-    this.preview = h('div', { class: 'preview' });
+    this.preview = h('div', { class: 'preview simple-preview' });
     this.message = h('div', { class: 'message error' });
     this.tableNote = h('div', { class: 'table-note dim' });
     this.tableBar = h('div', { class: 'table-bar', hidden: true });
-    this.entry = h('input', { type: 'text', placeholder: 'Try 12 × 8, 3/4 + 1/2, or sin(30)', autocomplete: 'off', spellcheck: false, inputMode: 'none', 'aria-label': 'Calculation' });
+    this.entry = h('input', { type: 'text', class: 'simple-entry', placeholder: 'Try 12 × 8, 3/4 + 1/2, or sin(30)', autocomplete: 'off', spellcheck: false, inputMode: 'none', 'aria-label': 'Calculation' });
     this.decimal = press({ text: 'Decimal', title: 'Show results as decimals instead of fractions', 'aria-pressed': String(this.options.fraction === 'decimal'), onclick: () => this.toggleDecimal() });
     this.graphThis = press({ text: 'Graph', title: 'Graph this function of x', disabled: true, onclick: () => {
       this.addGraph(this.entry.value.trim() === '' ? this.lastExpr : this.entry.value);
@@ -625,9 +718,9 @@ class App {
 
   historyCard(saved) {
     this.clearButton.hidden = false;
-    const answer = h('div', { class: 'history-answer' }, h('span', { class: 'history-result', text: saved.result }));
+    const answer = h('div', { class: 'history-answer' }, h('span', { class: 'history-result simple-result', text: saved.result }));
     if (saved.approx !== '') answer.append(h('span', { class: 'dim', text: `≈ ${saved.approx}` }));
-    const card = h('button', { type: 'button', class: 'history-card', title: 'Tap to use again', onclick: () => {
+    const card = h('button', { type: 'button', class: 'history-card simple-card', title: 'Tap to use again', onclick: () => {
       this.entry.value = saved.expr;
       this.entry.focus({ preventScroll: true });
       this.entry.setSelectionRange(saved.expr.length, saved.expr.length);

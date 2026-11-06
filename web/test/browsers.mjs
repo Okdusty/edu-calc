@@ -144,6 +144,40 @@ for (const [name, type] of [['firefox', firefox], ['webkit', webkit]]) {
     await page.locator('.file').setInputFiles({ name: 'book.xlsx', mimeType: 'application/octet-stream', buffer: Buffer.from(book) });
     await until(() => window.app.table.g[0][0] === 'Height');
     await page.screenshot({ path: join(shots, `${name}-offline-data.png`) });
+
+    check('offline: functions, exports, history, appearance, settings');
+    await tab('Calculator');
+    await page.locator('.header-end button', { hasText: 'Functions' }).click();
+    await page.fill('.catalog input', 'remainder');
+    await page.keyboard.press('Enter');
+    assert.equal(await page.inputValue(entry), 'mod(□, □)');
+    await page.fill(entry, '');
+    const menu = (item) => page.locator('.header-end button[aria-label="Menu"]').click().then(() => page.locator('.menu button', { hasText: item }).click());
+    await tab('Data');
+    await until(() => document.querySelector('.selectors select') !== null);
+    for (const [button, file] of [['PNG', 'graph.png'], ['SVG', 'graph.svg']]) {
+      const [d] = await Promise.all([page.waitForEvent('download'), (async () => { await menu('Export chart'); await page.locator('dialog button', { hasText: button }).click(); })()]);
+      assert.equal(d.suggestedFilename(), file);
+    }
+    const [csv] = await Promise.all([page.waitForEvent('download'), (async () => { await page.locator('[data-do="export"]').click(); await page.locator('dialog button', { hasText: 'CSV' }).click(); })()]);
+    assert.equal(csv.suggestedFilename(), 'data.csv');
+    await page.locator('[data-do="addRow"]').click();
+    await page.locator('[data-do="delRow"]').click();
+    await tab('Calculator');
+    await page.locator('.clear-history').click();
+    await page.locator('dialog button', { hasText: 'Clear History' }).click();
+    await until(() => document.querySelectorAll('.history-card').length === 0);
+    await menu('Dark');
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), 'dark');
+    await menu('Light');
+    await menu('Settings');
+    await page.fill('.settings-text', '[theme]\nplot_bg=#102030\n');
+    await page.locator('dialog.settings button', { hasText: 'Save' }).click();
+    await until(() => !document.querySelector('dialog.settings'));
+    assert.deepEqual(await page.evaluate(() => window.app.config.plot.bg), [16, 32, 48]);
+    await page.keyboard.press('F9');
+    assert.ok(await page.locator('.keypad').isHidden());
+    await page.keyboard.press('F9');
     assert.deepEqual(problems, [], 'no page errors');
     console.log(`${name}: all passed`);
   } catch (e) {
