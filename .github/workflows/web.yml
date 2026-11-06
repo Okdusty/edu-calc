@@ -57,6 +57,9 @@ jobs:
       - name: The site in a browser, online and offline
         working-directory: web
         run: node test/e2e.mjs
+      - name: Firefox and Safari's engine
+        working-directory: web
+        run: npx playwright install --with-deps firefox webkit && node test/browsers.mjs
       - name: Screenshots
         if: always()
         uses: actions/upload-artifact@v4
