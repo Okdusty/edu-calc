@@ -14,12 +14,20 @@ CROSS="--build=x86_64-pc-linux-gnu --host=wasm32-unknown-emscripten"
 mkdir -p "$WORK/src" "$P" "$OUT"
 export EM_PKG_CONFIG_PATH=$P/lib/pkgconfig PKG_CONFIG_PATH=$P/lib/pkgconfig PKG_CONFIG_LIBDIR=$P/lib/pkgconfig
 
-fetch() { # file url
-    [ -s "$WORK/src/$1" ] || curl -fsSL --retry 5 --retry-delay 5 -o "$WORK/src/$1" "$2"
+# file, sha256, urls: the first server that answers, checked against the sum whichever it was
+fetch() {
+    local file=$WORK/src/$1 sum=$2 url
+    shift 2
+    for url in "$@"; do
+        [ -s "$file" ] && break
+        curl -fsSL --connect-timeout 20 --max-time 300 --retry 2 --retry-delay 5 -o "$file" "$url" || { echo "no answer from $url"; rm -f "$file"; }
+    done
+    echo "$sum  $file" | sha256sum -c -
 }
 
 if [ ! -f "$P/lib/libgmp.a" ]; then
-    fetch gmp.tar.xz "https://ftp.gnu.org/gnu/gmp/gmp-$GMP.tar.xz"
+    fetch gmp.tar.xz a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898 \
+        "https://mirrors.kernel.org/gnu/gmp/gmp-$GMP.tar.xz" "https://ftpmirror.gnu.org/gmp/gmp-$GMP.tar.xz" "https://gmplib.org/download/gmp/gmp-$GMP.tar.xz" "https://ftp.gnu.org/gnu/gmp/gmp-$GMP.tar.xz"
     rm -rf "$WORK/gmp" && mkdir "$WORK/gmp" && tar xf "$WORK/src/gmp.tar.xz" -C "$WORK/gmp" --strip-components=1
     (cd "$WORK/gmp"
      CC_FOR_BUILD=gcc CFLAGS=-O2 emconfigure ./configure --host=none --prefix="$P" --disable-assembly --disable-shared --enable-static --disable-cxx
@@ -27,7 +35,8 @@ if [ ! -f "$P/lib/libgmp.a" ]; then
 fi
 
 if [ ! -f "$P/lib/libmpfr.a" ]; then
-    fetch mpfr.tar.xz "https://ftp.gnu.org/gnu/mpfr/mpfr-$MPFR.tar.xz"
+    fetch mpfr.tar.xz b67ba0383ef7e8a8563734e2e889ef5ec3c3b898a01d00fa0a6869ad81c6ce01 \
+        "https://mirrors.kernel.org/gnu/mpfr/mpfr-$MPFR.tar.xz" "https://ftpmirror.gnu.org/mpfr/mpfr-$MPFR.tar.xz" "https://www.mpfr.org/mpfr-$MPFR/mpfr-$MPFR.tar.xz" "https://ftp.gnu.org/gnu/mpfr/mpfr-$MPFR.tar.xz"
     rm -rf "$WORK/mpfr" && mkdir "$WORK/mpfr" && tar xf "$WORK/src/mpfr.tar.xz" -C "$WORK/mpfr" --strip-components=1
     (cd "$WORK/mpfr"
      CFLAGS=-O2 emconfigure ./configure $CROSS --prefix="$P" --with-gmp="$P" --disable-shared --enable-static --disable-thread-safe
@@ -35,7 +44,8 @@ if [ ! -f "$P/lib/libmpfr.a" ]; then
 fi
 
 if [ ! -f "$P/lib/libxml2.a" ]; then
-    fetch xml.tar.xz "https://download.gnome.org/sources/libxml2/${XML%.*}/libxml2-$XML.tar.xz"
+    fetch xml.tar.xz 277294cb33119ab71b2bc81f2f445e9bc9435b893ad15bb2cd2b0e859a0ee84a \
+        "https://download.gnome.org/sources/libxml2/${XML%.*}/libxml2-$XML.tar.xz" "https://mirror.umd.edu/gnome/sources/libxml2/${XML%.*}/libxml2-$XML.tar.xz"
     rm -rf "$WORK/xml" && mkdir "$WORK/xml" && tar xf "$WORK/src/xml.tar.xz" -C "$WORK/xml" --strip-components=1
     (cd "$WORK/xml"
      CFLAGS=-O2 emconfigure ./configure $CROSS --prefix="$P" --disable-shared --enable-static --without-python --without-zlib --without-lzma \
@@ -45,7 +55,8 @@ fi
 
 Q=$WORK/qalc
 if [ ! -f "$P/lib/libqalculate.a" ]; then
-    fetch qalc.tar.gz "https://github.com/Qalculate/libqalculate/releases/download/v$QALC/libqalculate-$QALC.tar.gz"
+    fetch qalc.tar.gz f3dfdcf97d5a9e3a5bc0ebe66afd184721b606276eee3ba0ada8c92a5e71d44c \
+        "https://github.com/Qalculate/libqalculate/releases/download/v$QALC/libqalculate-$QALC.tar.gz"
     rm -rf "$Q" && mkdir "$Q" && tar xf "$WORK/src/qalc.tar.gz" -C "$Q" --strip-components=1
     # ac_cv_prog_cc_c23: configure also looks for a host compiler and reuses emcc's -std=gnu23 on it
     (cd "$Q"
