@@ -690,6 +690,7 @@ try {
     assert.notDeepEqual(await page.evaluate(() => caches.keys()), before);
     await page.reload();
     await ready();
+    await tab('Calculator');
     await page.fill('.input-row input', '2 + 3');
     await previewIs('= 5');
     await page.fill('.input-row input', '');
