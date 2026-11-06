@@ -9,7 +9,8 @@ const dist = new URL('../dist/', import.meta.url).pathname;
 const shots = new URL('../shots/', import.meta.url).pathname;
 mkdirSync(shots, { recursive: true });
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.wasm': 'application/wasm', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
-const server = createServer((req, res) => {
+// SITE_URL: test what's published instead of web/dist
+const server = process.env.SITE_URL ? null : createServer((req, res) => {
   const path = decodeURIComponent(new URL(req.url, 'http://x').pathname);
   if (!path.startsWith('/edu-calc/')) { res.writeHead(404).end(); return; }
   let file = join(dist, path.slice('/edu-calc/'.length));
@@ -17,8 +18,8 @@ const server = createServer((req, res) => {
   try { statSync(file); } catch { res.writeHead(404).end(); return; }
   res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream' }).end(readFileSync(file));
 });
-await new Promise((r) => server.listen(0, '127.0.0.1', r));
-const url = `http://127.0.0.1:${server.address().port}/edu-calc/`;
+if (server) await new Promise((r) => server.listen(0, '127.0.0.1', r));
+const url = process.env.SITE_URL ?? `http://127.0.0.1:${server.address().port}/edu-calc/`;
 
 const browser = await chromium.launch();
 const context = await browser.newContext({ viewport: { width: 1366, height: 860 }, deviceScaleFactor: 2, acceptDownloads: true, permissions: ['clipboard-read', 'clipboard-write'] });
@@ -452,21 +453,114 @@ try {
   await context.setOffline(false);
 
   check('a phone-sized screen');
+  const phoneLayout = (name) => page.evaluate(() => {
+    const visible = (e) => e.offsetParent !== null && getComputedStyle(e).visibility !== 'hidden';
+    const out = [];
+    if (document.documentElement.scrollWidth > window.innerWidth + 1) out.push('sideways scroll');
+    const tabs = document.querySelector('.tabs').getBoundingClientRect();
+    const end = document.querySelector('.header-end').getBoundingClientRect();
+    if (tabs.right > end.left + 1) out.push(`tabs (to ${tabs.right}) run into the tools (from ${end.left})`);
+    for (const b of document.querySelectorAll('.headerbar button, .keypad button')) {
+      if (visible(b) && b.scrollWidth > b.clientWidth + 1) out.push(`clipped: ${b.textContent}`);
+      if (visible(b) && b.getBoundingClientRect().height > 60 && b.closest('.headerbar')) out.push(`wrapped: ${b.textContent}`);
+    }
+    return out;
+  }).then((problems2) => assert.deepEqual(problems2, [], name));
+  for (const width of [412, 360]) {
+    await page.setViewportSize({ width, height: 800 });
+    await tab('Calculator');
+    await page.waitForTimeout(150);
+    if (width === 412) await shot('10-phone-calculator');
+    await phoneLayout(`${width}: calculator`);
+    await tab('Graph');
+    await page.waitForTimeout(250);
+    if (width === 412) await shot('11-phone-graph');
+    await phoneLayout(`${width}: graph`);
+    await tab('Data');
+    await page.waitForTimeout(150);
+    if (width === 412) await shot('12-phone-data');
+    await phoneLayout(`${width}: data`);
+    // the chart keeps a usable size and nothing overlaps: everything is below the chart, reached by scrolling
+    const chart = await page.locator('.view:not([hidden]) .board-area').boundingBox();
+    assert.ok(chart.height >= 200, `${width}: chart ${chart.height} tall`);
+    const [status, stats] = [await page.locator('.view:not([hidden]) .board-status').boundingBox(), await page.locator('.stats').boundingBox()];
+    assert.ok(stats.y >= status.y + status.height - 1, `${width}: statistics overlap the chart's status line`);
+  }
   await page.setViewportSize({ width: 412, height: 800 });
   await tab('Calculator');
-  await page.waitForTimeout(150);
-  await shot('10-phone-calculator');
-  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), 'no sideways scroll');
-  await tab('Graph');
-  await page.waitForTimeout(250);
-  await shot('11-phone-graph');
-  await tab('Data');
-  await page.waitForTimeout(150);
-  await shot('12-phone-data');
+  await page.locator('.side-keys button', { hasText: 'Stats' }).click();
+  await page.waitForTimeout(100);
+  await shot('14-phone-stats-keys');
+  await phoneLayout('phone: stats keys');
+  await page.locator('.side-keys button', { hasText: 'Basic' }).click();
   await page.setViewportSize({ width: 1920, height: 1080 });
   await tab('Graph');
   await page.waitForTimeout(250);
   await shot('13-board-graph');
+
+  check('touch: tap, flick, pinch and double-tap with real fingers');
+  const touchContext = await browser.newContext({ viewport: { width: 1366, height: 860 }, hasTouch: true });
+  const t = await touchContext.newPage();
+  t.on('pageerror', (e) => problems.push(`touch pageerror: ${e.message}`));
+  await t.goto(url);
+  await t.waitForFunction(() => window.app?.engine?.ready === true);
+  assert.equal(await t.inputValue('.input-row input'), '');
+  assert.equal(await t.locator('.input-row input').evaluate((e) => e.inputMode), 'none', 'the keypad replaces the on-screen keyboard');
+  await t.locator('.keypad button', { hasText: /^7$/ }).tap();
+  await t.locator('.keypad button', { hasText: /^x²$/ }).tap();
+  assert.equal(await t.inputValue('.input-row input'), '7□²'.replace('□', ''), 'keys type at the cursor');
+  await t.fill('.input-row input', '');
+  await t.locator('.tabs button', { hasText: 'Graph' }).tap();
+  await t.locator('.graph-row input[type="text"]').first().fill('x²');
+  await t.waitForFunction(() => window.app.graph.axes.series.length >= 1);
+  const cdp = await touchContext.newCDPSession(t);
+  const fingers = (type, points) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: points.map(([x, y], id) => ({ x, y, id })) });
+  const area = await t.locator('.view:not([hidden]) canvas').boundingBox();
+  const [cx, cy] = [area.x + area.width / 2, area.y + area.height / 2];
+  const range = () => t.evaluate(() => window.app.graph.range());
+  await t.waitForTimeout(100);
+  const r0 = await range();
+  await fingers('touchStart', [[cx - 40, cy], [cx + 40, cy]]);
+  for (let i = 1; i <= 8; i++) { await fingers('touchMove', [[cx - 40 - i * 15, cy], [cx + 40 + i * 15, cy]]); await t.waitForTimeout(16); }
+  await fingers('touchEnd', []);
+  await t.waitForTimeout(100);
+  const r1 = await range();
+  assert.ok(r1[1] - r1[0] < (r0[1] - r0[0]) * 0.6, `pinch out zooms in: ${r0} -> ${r1}`);
+  assert.ok(Math.abs((r1[0] + r1[1]) / 2 - (r0[0] + r0[1]) / 2) < (r0[1] - r0[0]) * 0.1, 'about the fingers');
+  await fingers('touchStart', [[cx, cy]]);
+  for (let i = 1; i <= 6; i++) { await fingers('touchMove', [[cx - i * 40, cy]]); await t.waitForTimeout(16); }
+  await fingers('touchEnd', []);
+  const r2 = await range();
+  await t.waitForTimeout(250);
+  const r3 = await range();
+  assert.ok(r3[0] > r2[0], `a flick keeps gliding: ${r2} -> ${r3}`);
+  await t.waitForTimeout(1500);
+  await t.locator('.view:not([hidden]) canvas').tap({ position: { x: area.width / 2, y: area.height / 2 } });
+  await t.waitForTimeout(60);
+  await t.locator('.view:not([hidden]) canvas').tap({ position: { x: area.width / 2, y: area.height / 2 } });
+  await t.waitForFunction(() => { const r = window.app.graph.axes.xlim; return r[0] === -10 && r[1] === 10; });
+  const handle = await t.locator('.view:not([hidden]) .pane-handle').boundingBox();
+  const before2 = await t.locator('.graph-side').evaluate((e) => e.clientWidth);
+  await fingers('touchStart', [[handle.x + 5, handle.y + 200]]);
+  for (let i = 1; i <= 5; i++) { await fingers('touchMove', [[handle.x + 5 + i * 30, handle.y + 200]]); await t.waitForTimeout(16); }
+  await fingers('touchEnd', []);
+  await t.waitForTimeout(150);
+  const after2 = await t.locator('.graph-side').evaluate((e) => e.clientWidth);
+  assert.ok(after2 > before2 + 100, `dragging the divider widens the list: ${before2} -> ${after2}`);
+  const eq2 = await t.locator('.graph-row input[type="text"]').first().evaluate((e) => parseFloat(getComputedStyle(e).fontSize));
+  await t.setViewportSize({ width: 1800, height: 900 });
+  await t.waitForTimeout(150);
+  const widened = await t.locator('.graph-side').evaluate((e) => e.clientWidth);
+  assert.ok(widened > after2, 'the panes keep their proportions in a bigger window');
+  assert.ok(await t.locator('.graph-row input[type="text"]').first().evaluate((e) => parseFloat(getComputedStyle(e).fontSize)) > eq2, 'and the equations grow with them');
+  const grip = await t.locator('.keypad-grip').boundingBox();
+  const kh = await t.locator('.keypad').evaluate((e) => e.offsetHeight);
+  await fingers('touchStart', [[grip.x + grip.width / 2, grip.y + 5]]);
+  for (let i = 1; i <= 5; i++) { await fingers('touchMove', [[grip.x + grip.width / 2, grip.y + 5 - i * 15]]); await t.waitForTimeout(16); }
+  await fingers('touchEnd', []);
+  await t.waitForTimeout(100);
+  assert.ok(await t.locator('.keypad').evaluate((e) => e.offsetHeight) > kh + 40, 'dragging the grip resizes the keypad');
+  await touchContext.close();
 
   assert.deepEqual(problems, [], 'no page errors');
   console.log(`\nAll ${steps.length} checks passed.`);
@@ -478,5 +572,5 @@ try {
   process.exitCode = 1;
 } finally {
   await browser.close();
-  server.close();
+  server?.close();
 }

@@ -7,6 +7,8 @@ A calculator, Octave-style interpreter and plotter in one program, with a GTK 4 
 
 **Status: beta.** Snapshot builds for Linux (AppImage) and Windows (64-bit installer or zip) are on the releases page.
 
+**In a browser:** [okdusty.github.io/edu-calc](https://okdusty.github.io/edu-calc/) has Simple mode (Calculator, Graph and Data) on the same calculator engine, libqalculate compiled to WebAssembly. After the first visit it works with no network at all, and your history, table, functions and settings stay in that browser. Advanced and the Octave interpreter are in the desktop app only.
+
 ![Advanced calculator: answers with units and exact forms, autocomplete, and a cubic with its roots, extrema and point of symmetry marked](demo/gui-calc.png)
 
 ### What it does
@@ -173,6 +175,8 @@ An optional display-based test exercises the Simple UI and writes screenshots/ex
 `XDG_CONFIG_HOME="$PWD/target/ui-test-config" cargo test classroom_ui_smoke -- --ignored --test-threads=1`.
 For a small logical viewport at 200% scaling, also set `GDK_SCALE=2 QCALCP_UI_WIDTH=960
 QCALCP_UI_HEIGHT=540`. The workspace scrolls when necessary while the keypad stays reachable.
+
+The web app is in `web/`: `web/engine/build.sh` compiles the engine with Emscripten, `web/app/` is the page, and `.github/workflows/web.yml` builds it, tests it in a real browser online and offline, and publishes it to GitHub Pages from `master`. `node --test web/test/logic.test.mjs` runs its logic tests, which carry the Rust tests' expected values.
 
 ### Known gaps
 

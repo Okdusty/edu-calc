@@ -123,6 +123,7 @@ dialog .buttons button { min-width: 84px; min-height: 40px; }
 .pane-handle { cursor: col-resize; background: var(--bg-alt); border-inline: 1px solid var(--line); touch-action: none; position: relative; }
 .pane-handle::after { content: ""; position: absolute; inset: calc(50% - 20px) 3px; border-radius: 2px; background: var(--dim); opacity: .5; }
 .pane-left, .pane-right { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.data-view .pane-right { overflow-y: auto; }
 
 .graph-side { padding: 6px; gap: 4px; }
 .graph-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding-right: 2px; }
@@ -139,7 +140,8 @@ dialog .buttons button { min-width: 84px; min-height: 40px; }
 .graph-tools button { min-height: 44px; min-width: 44px; }
 .graph-tools > button { flex: 1; }
 
-.board { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.board { flex: 1; min-height: 170px; display: flex; flex-direction: column; }
+.short { display: none; }
 .board-area { flex: 1; position: relative; min-height: 140px; overflow: hidden; background: var(--view); }
 .board canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
 .board-tools { position: absolute; top: 8px; right: 8px; display: inline-flex; }
@@ -206,18 +208,32 @@ dialog .buttons button { min-width: 84px; min-height: 40px; }
 .loading { color: var(--dim); }
 
 @media (max-width: 760px) {
-  .tabs button { padding: 0 10px; }
-  .headerbar { grid-template-columns: auto minmax(0, 1fr); }
+  /* a phone: the page buttons in a row, function keys above the number pad, the Data tab scrolling */
+  .headerbar { grid-template-columns: auto minmax(0, 1fr); gap: 4px; padding: 4px; }
   .header-start { display: none; }
   .header-end { gap: 2px; }
-  .header-end > button:not(.icon-button) { padding: 0 8px; }
-  .chevron::after { margin-left: 4px; }
-  .paned { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(120px, 42%) 10px minmax(0, 1fr); }
+  .header-end > button { padding: 0 7px; }
+  .header-end .icon-button { min-width: 34px; padding: 0; }
+  .long { display: none; }
+  .short { display: inline; }
+  .chevron::after { display: none; }
+  .tabs button { padding: 0 7px; }
+  .paned { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(120px, 42%) minmax(0, 1fr); }
   .pane-handle { display: none; }
-  .paned { grid-template-rows: minmax(120px, 42%) minmax(0, 1fr); }
-  .keypad { grid-template-columns: 50px minmax(0, 1fr); gap: 4px; }
-  .tiles { column-gap: 4px; }
-  .key-grid { gap: 2px; }
-  .key-grid button { font-size: .95em; }
+  .data-view { display: block; overflow-y: auto; }
+  .data-view .pane-left { height: 320px; }
+  .data-view .pane-right { overflow: visible; display: block; }
+  .data-view .board { height: 300px; }
+  .more-stats { max-height: none; }
+  .keypad { grid-template-columns: minmax(0, 1fr); grid-template-rows: 34px minmax(0, 1fr); gap: 4px; height: var(--keypad-height, 330px); }
+  .side-keys { grid-template-rows: none; grid-template-columns: repeat(4, 1fr); }
+  .tiles { grid-template-columns: minmax(0, 1fr); grid-auto-rows: minmax(0, 1fr); row-gap: 4px; }
+  .key-grid.functions, .key-grid.numbers { grid-column: auto; }
+  .key-grid { gap: 3px; }
+  .keypad.data-mode { grid-template-rows: minmax(0, 1fr); height: var(--keypad-height, 220px); }
   .history-result { font-size: 1.35em; }
+}
+@media (max-width: 400px) {
+  .tabs button { padding: 0 5px; font-size: 13.5px; }
+  .header-end > button { padding: 0 5px; font-size: 13.5px; }
 }

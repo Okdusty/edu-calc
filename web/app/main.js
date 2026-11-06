@@ -217,7 +217,7 @@ class App {
     }
     const end = $('.header-end');
     this.angle = press({ text: 'DEG', onclick: () => this.setAngle(this.options.angle !== 'rad' ? 'rad' : 'deg') });
-    this.functions = press({ text: 'Functions', class: 'chevron', title: 'Functions and how to write them; tap one to insert it', 'aria-haspopup': 'true', onclick: () => this.openFunctions() });
+    this.functions = press({ html: '<span class="long">Functions</span><span class="short">f(x)</span>', class: 'chevron', 'aria-label': 'Functions', title: 'Functions and how to write them; tap one to insert it', 'aria-haspopup': 'true', onclick: () => this.openFunctions() });
     const keypad = press({ class: 'flat icon-button', html: svg(ICON.keyboard, 20), title: 'Show or hide the keypad (F9)', 'aria-label': 'Show or hide the keypad', onclick: () => this.toggleKeypad() });
     const menu = press({ class: 'flat icon-button', html: svg(ICON.menu, 18), title: 'Menu', 'aria-label': 'Menu', 'aria-haspopup': 'true', onclick: () => this.openMenu(menu) });
     end.append(this.angle, this.functions, keypad, menu);
@@ -853,6 +853,7 @@ class App {
     const left = h('div', { class: 'pane-left' }, this.table.root);
     const right = h('div', { class: 'pane-right' }, selectors, this.dataBoard.root, this.statsLine, this.more);
     const view = this.paned(left, right, 'dataSplit', 0.28);
+    view.classList.add('data-view');
     view.style.setProperty('--min-left', '300px');
     view.classList.add('view');
     this.views.Data = view;
