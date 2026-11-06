@@ -477,7 +477,9 @@ try {
   await save();
   await until(() => document.querySelector('.settings-problems').textContent.includes('plot_fg=nope'));
   assert.match(await text('.settings-problems'), /mine: no such action/);
-  await page.locator('dialog.settings button', { hasText: 'Cancel' }).click();
+  await page.locator('dialog.settings button', { hasText: 'Defaults' }).click();
+  await save();
+  await until(() => !document.querySelector('dialog.settings'));
   await openSettings();
   await page.locator('dialog.settings button[role="tab"]', { hasText: 'style.css' }).click();
   await page.fill('.settings-text', '.simple-entry { color: rgb(1, 2, 3); }');
