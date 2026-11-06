@@ -62,6 +62,10 @@ jobs:
       - name: Firefox and Safari's engine
         working-directory: web
         run: npx playwright install --with-deps firefox webkit && node test/browsers.mjs
+      - name: The network going away during an update
+        if: always()
+        working-directory: web
+        run: node test/update-race.mjs
       - name: Screenshots
         if: always()
         uses: actions/upload-artifact@v4

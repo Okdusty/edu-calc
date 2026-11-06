@@ -125,9 +125,16 @@ for (const [name, type] of [['firefox', firefox], ['webkit', webkit]]) {
 
     check('offline');
     await page.evaluate(() => navigator.serviceWorker.ready);
-    await until(async () => (await caches.keys()).some((k) => k.startsWith('educalc-')));
-    await until(() => navigator.serviceWorker.controller !== null);
-    await page.waitForTimeout(500);
+    // waitForFunction would take an async check's promise as already true
+    for (let i = 0; ; i++) {
+      const ok = await page.evaluate(async () => {
+        const r = await navigator.serviceWorker.getRegistration();
+        return r?.active?.state === 'activated' && !r.installing && !r.waiting && navigator.serviceWorker.controller !== null && (await caches.keys()).length === 1;
+      });
+      if (ok) break;
+      assert.ok(i < 600, 'the offline copy');
+      await page.waitForTimeout(100);
+    }
     await site.stop();
     // WebKit's simulated offline fails a reload before its service worker gets to answer
     if (name !== 'webkit' || process.env.SITE_URL) await context.setOffline(true);

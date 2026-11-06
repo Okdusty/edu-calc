@@ -58,6 +58,19 @@ let pass = '';
 const check = (name) => { step = `${pass}${name}`; steps.push(step); console.log(`- ${step}`); };
 const shot = (name) => page.screenshot({ path: join(shots, `${pass ? 'offline-' : ''}${name}.png`) });
 const until = (f, arg) => page.waitForFunction(f, arg, { timeout: 30000 });
+/** A check that has to await something: waitForFunction would take its promise as already true. */
+const untilAsync = async (on, f, what, ms = 60000) => {
+  const end = Date.now() + ms;
+  for (;;) {
+    if (await on.evaluate(f)) return;
+    assert.ok(Date.now() < end, `timed out: ${what}`);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+};
+const copyReady = async () => {
+  const r = await navigator.serviceWorker.getRegistration();
+  return r?.active?.state === 'activated' && !r.installing && !r.waiting && navigator.serviceWorker.controller !== null && (await caches.keys()).length === 1;
+};
 const text = (sel) => page.locator(sel).first().innerText();
 const key = (face) => page.locator('.keypad button', { hasText: new RegExp(`^${face.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }).first().click();
 const keys = async (...faces) => { for (const f of faces) await key(f); };
@@ -586,10 +599,10 @@ try {
     await f.waitForFunction(() => document.querySelector('.preview').textContent === '= 4', undefined, { timeout: 30000 });
     assert.ok(engineTrouble.requests > 3, `tried again after the failures (${engineTrouble.requests} requests)`);
     await f.evaluate(() => navigator.serviceWorker.ready);
-    await f.waitForFunction(async () => {
+    await untilAsync(f, async () => {
       const names = await caches.keys();
-      return names.length > 0 && (await (await caches.open(names[0])).keys()).some((r) => r.url.endsWith('engine/qalc.wasm'));
-    }, undefined, { timeout: 60000 });
+      return names.length === 1 && (await (await caches.open(names[0])).keys()).some((r) => r.url.endsWith('engine/qalc.wasm'));
+    }, 'the engine in the offline copy after the hiccup');
     await flaky.close();
 
     check('the server stays down: the app says so, and recovers by itself');
@@ -615,9 +628,8 @@ try {
   await t.waitForFunction(() => window.app?.engine?.ready === true);
   // the offline copy, then fingers on it with the network gone
   await t.evaluate(() => navigator.serviceWorker.ready);
-  await t.waitForFunction(() => navigator.serviceWorker.controller !== null, undefined, { timeout: 60000 }).catch(() => t.reload());
-  await t.waitForFunction(async () => (await caches.keys()).some((k) => k.startsWith('educalc-')));
-  await t.waitForTimeout(500);
+  await t.reload();
+  await untilAsync(t, copyReady, 'the offline copy for touch');
   await touchContext.setOffline(true);
   await t.reload();
   await t.waitForFunction(() => window.app?.engine?.ready === true);
@@ -681,13 +693,14 @@ try {
 
   if (!process.env.SITE_URL) {
     check('an update replaces the offline copy');
-    await page.evaluate(() => navigator.serviceWorker.ready);
-    await until(async () => (await caches.keys()).some((k) => k.startsWith('educalc-')));
+    await page.reload();
+    await untilAsync(page, copyReady, 'the offline copy before the update');
     const before = await page.evaluate(() => caches.keys());
     engineTrouble.newVersion = '-next';
     await page.evaluate(async () => (await navigator.serviceWorker.getRegistration()).update());
-    await until(async () => { const k = await caches.keys(); return k.length === 1 && k[0].endsWith('-next'); });
+    await untilAsync(page, async () => { const k = await caches.keys(); return k.length === 1 && k[0].endsWith('-next'); }, 'the new offline copy, the old one gone');
     assert.notDeepEqual(await page.evaluate(() => caches.keys()), before);
+    await untilAsync(page, copyReady, 'the new version in charge');
     await page.reload();
     await ready();
     await tab('Calculator');
@@ -698,9 +711,8 @@ try {
 
   check('offline: the network really goes away');
   await page.evaluate(() => navigator.serviceWorker.ready);
-  await until(() => navigator.serviceWorker.controller !== null).catch(() => page.reload());
-  await until(async () => (await caches.keys()).some((k) => k.startsWith('educalc-')));
-  await page.waitForTimeout(500);
+  await page.reload();
+  await untilAsync(page, copyReady, 'the offline copy');
   // locally the server itself goes away; GitHub's can't be stopped, so there the browser is told it's offline
   if (server) {
     server.closeAllConnections();
@@ -716,23 +728,7 @@ try {
   // from a clean slate: nothing left over from the online pass, only the offline copy
   await page.evaluate(() => localStorage.clear());
   await page.setViewportSize({ width: 1366, height: 860 });
-  const t0 = Date.now();
-  const trace = (kind) => (r) => console.log(`  [${Date.now() - t0} ms] ${kind} ${r.url().replace(url, '')} ${r.resourceType()} sw=${r.serviceWorker() ? 'y' : 'n'} ${r.failure()?.errorText ?? ''}`);
-  page.on('request', trace('start')); page.on('requestfinished', trace('done')); page.on('requestfailed', trace('FAIL'));
-  page.on('framenavigated', () => console.log(`  [${Date.now() - t0} ms] navigated`));
-  page.on('domcontentloaded', () => console.log(`  [${Date.now() - t0} ms] domcontentloaded`));
-  page.on('load', () => console.log(`  [${Date.now() - t0} ms] load`));
-  context.on('serviceworker', (w) => console.log(`  [${Date.now() - t0} ms] service worker started ${w.url()}`));
-  console.log('  state before:', await page.evaluate(async () => {
-    const r = await navigator.serviceWorker.getRegistration();
-    return JSON.stringify({ active: r?.active?.state, waiting: r?.waiting?.state, installing: r?.installing?.state, controller: navigator.serviceWorker.controller?.state, caches: await caches.keys() });
-  }));
-  await page.reload({ timeout: 20000 }).catch(async (e) => {
-    console.log(`  reload stuck: ${e.message.split('\n')[0]}`);
-    console.log('  url', page.url());
-    console.log('  after:', await page.evaluate(() => JSON.stringify({ ready: document.readyState, scripts: performance.getEntriesByType('resource').map((r) => r.name.split('/').pop()) })).catch((x) => `no answer: ${x.message.split('\n')[0]}`));
-    throw e;
-  });
+  await page.reload();
   await ready();
   const offlineTab = await context.newPage();
   await offlineTab.goto(url);
