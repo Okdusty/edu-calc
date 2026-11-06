@@ -51,8 +51,10 @@ try {
   await shot('01-start');
 
   check('calculator: keys, live preview, history');
-  await keys('3', 'a/b', '4', '+', '1', 'a/b', '2');
-  assert.equal(await page.inputValue('.input-row input'), '3□/□4+1□/□2'.replace(/□/g, '') === '' ? '' : await page.inputValue('.input-row input'));
+  await keys('a/b');
+  assert.equal(await page.inputValue('.input-row input'), '□/□');
+  await keys('3');
+  assert.equal(await page.inputValue('.input-row input'), '3/□');
   await page.fill('.input-row input', '3/4 + 1/2');
   await previewIs('= 5/4  ≈ 1.25');
   await key('Enter');
@@ -96,12 +98,15 @@ try {
 
   check('graph: Graph button, rows, curves, errors');
   await until(() => window.app.graph.axes.series.length === 1);
+  // like the desktop: the first, empty row stays and the function gets a new one
   const first = page.locator('.graph-row input[type="text"]').first();
-  assert.equal(await first.inputValue(), 'x² + 1');
-  await page.locator('.graph-tools button', { hasText: 'Add function' }).click();
-  const second = page.locator('.graph-row input[type="text"]').nth(1);
-  await second.fill('y = 2x + 1');
+  assert.equal(await page.locator('.graph-row input[type="text"]').nth(1).inputValue(), 'x² + 1');
+  await first.fill('y = 2x + 1');
   await until(() => window.app.graph.axes.series.length === 2);
+  await page.locator('.graph-tools button', { hasText: 'Add function' }).click();
+  assert.equal(await page.locator('.graph-row').count(), 3);
+  await page.locator('.graph-delete').nth(2).click();
+  assert.equal(await page.locator('.graph-row').count(), 2);
   for (const [bad, want] of [['sin(', '“sin(” is missing a closing “)”.'], ['2x+', '“+” at the end'], ['foo(x)', '“foo”'], ['x+t', '“t”'], ['2,5x', 'For decimals']]) {
     await first.fill(bad);
     await until((w) => document.querySelector('.graph-error').textContent.includes(w), want);
