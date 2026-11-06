@@ -134,7 +134,8 @@ jobs:
           function Msiexec($action, $file) {
             $log = "$env:RUNNER_TEMP\msi.log"
             $code = (Start-Process msiexec -ArgumentList "$action `"$file`" /qn /l*v `"$log`"" -Wait -PassThru).ExitCode
-            if ($code) { Get-Content $log -Tail 60; throw "msiexec $action: exit code $code" }
+            # 3010: done, a restart would finish it
+            if ($code -notin 0, 3010) { Get-Content $log -Tail 60; throw "msiexec ${action}: exit code $code" }
           }
           function Entries { @(Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object DisplayName -eq 'EduCalculator') }
           $dir = "$env:ProgramFiles\EduCalculator"
@@ -143,7 +144,7 @@ jobs:
           $env:XDG_CONFIG_HOME = "$env:RUNNER_TEMP\cfg-msi"
 
           Msiexec '/i' $msi
-          if ((Entries).Count -ne 1) { throw 'not listed once in Apps' }
+          if (@(Entries).Count -ne 1) { throw 'not listed once in Apps' }
           $shell = New-Object -ComObject WScript.Shell
           $app = $shell.CreateShortcut("$menu\EduCalculator.lnk")
           if ($app.TargetPath -ne $exe) { throw "Start menu shortcut opens '$($app.TargetPath)'" }
@@ -162,18 +163,18 @@ jobs:
           $gui = Start-Process $exe -PassThru
           Start-Sleep 15
           if ($gui.HasExited) { throw "installed app: GUI exited with $($gui.ExitCode)" }
-          Stop-Process $gui
-          Wait-Process -Id $gui.Id -Timeout 10 -ErrorAction SilentlyContinue
+          $gui | Stop-Process
+          $gui.WaitForExit(10000) | Out-Null
           $env:PATH = $path
 
-          $before = (Entries)[0].DisplayVersion
+          $before = @(Entries)[0].DisplayVersion
           Msiexec '/i' "$env:RUNNER_TEMP\next.msi"
-          $now = Entries
+          $now = @(Entries)
           if ($now.Count -ne 1) { throw "upgrade left $($now.Count) entries in Apps" }
           if ($now[0].DisplayVersion -eq $before) { throw "upgrade kept version $before" }
 
           Msiexec '/x' "$env:RUNNER_TEMP\next.msi"
-          if ((Entries).Count) { throw 'still listed in Apps after uninstall' }
+          if (@(Entries).Count) { throw 'still listed in Apps after uninstall' }
           foreach ($p in $dir, $menu) { if (Test-Path $p) { Get-ChildItem $p -Recurse | Select-Object -First 20 | Out-String; throw "$p left behind" } }
 
       - uses: actions/upload-artifact@v4
