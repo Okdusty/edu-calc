@@ -42,12 +42,16 @@ const settled = async () => {
 };
 
 let failed = 0;
-for (const [name, type, rounds] of [['chromium', chromium, [0, 20, 50, 100, 150, 200, 300, 400, 600, 800, 1200, 2000, 3000, 5000]], ['firefox', firefox, [0, 100, 400, 1500]], ['webkit', webkit, [0, 100, 400, 1500]]]) {
+for (const [name, type, rounds] of [['chromium', chromium, [0, 20, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 90, 100, 150, 200, 300, 400, 600, 800, 1200, 2000, 3000, 5000]], ['firefox', firefox, [0, 100, 400, 1500]], ['webkit', webkit, [0, 100, 400, 1500]]]) {
   const browser = await type.launch();
   for (const delay of rounds) {
     const site = await serve();
     const context = await browser.newContext();
     const page = await context.newPage();
+    const log = [];
+    page.on('console', (m) => log.push(`console ${m.type()}: ${m.text().slice(0, 160)}`));
+    page.on('pageerror', (e) => log.push(`pageerror: ${e.message.slice(0, 160)}`));
+    page.on('requestfailed', (r) => log.push(`failed: ${r.url().split('/edu-calc/')[1]} ${r.failure()?.errorText}`));
     const start = Date.now();
     let state = '';
     try {
@@ -65,6 +69,7 @@ for (const [name, type, rounds] of [['chromium', chromium, [0, 20, 50, 100, 150,
         return JSON.stringify({ active: r?.active?.state, waiting: r?.waiting?.state, installing: r?.installing?.state, caches: await caches.keys() });
       });
       const t = Date.now();
+      log.length = 0;
       await page.reload({ timeout: 25000 });
       await page.waitForFunction(() => window.app?.engine?.ready === true, undefined, { timeout: 25000 });
       await page.fill('.input-row input', '6 × 7');
@@ -73,6 +78,15 @@ for (const [name, type, rounds] of [['chromium', chromium, [0, 20, 50, 100, 150,
     } catch (e) {
       failed++;
       console.log(`${name} +${delay} ms: FAILED after ${Date.now() - start} ms  ${state}\n  ${e.message.split('\n')[0]}`);
+      console.log('  now:', await page.evaluate(async () => {
+        const r = await navigator.serviceWorker.getRegistration();
+        return JSON.stringify({
+          url: location.href, readyState: document.readyState, hasApp: !!window.app, ready: window.app?.engine?.ready, starts: window.app?.engine?.starts, retrying: window.app?.engine?.retrying,
+          message: document.querySelector('.message')?.textContent, preview: document.querySelector('.preview')?.textContent,
+          controller: navigator.serviceWorker.controller?.state, active: r?.active?.state, waiting: r?.waiting?.state, installing: r?.installing?.state, caches: await caches.keys(),
+        });
+      }).catch((x) => `no answer: ${x.message.split('\n')[0]}`));
+      console.log(`  log (${log.length}):\n    ${log.slice(-25).join('\n    ')}`);
     } finally {
       await context.close();
       await site.stop().catch(() => {});
