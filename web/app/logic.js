@@ -188,7 +188,7 @@ export function expression(input) {
     text = text.slice(eq + 1).trim();
   }
   if (text === '') throw new Error('Enter a function of x.');
-  if (/[=<>;:[\]□]/.test(text)) throw new Error('Complete a function of x. Equations, inequalities and scripts belong in Advanced.');
+  if (/[=<>;:[\]□]/.test(text)) throw new Error("Complete a function of x. Equations and inequalities can't be graphed here.");
   syntax(text);
   return text;
 }

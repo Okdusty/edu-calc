@@ -45,8 +45,9 @@ Q=$WORK/qalc
 if [ ! -f "$P/lib/libqalculate.a" ]; then
     fetch qalc.tar.gz "https://github.com/Qalculate/libqalculate/releases/download/v$QALC/libqalculate-$QALC.tar.gz"
     rm -rf "$Q" && mkdir "$Q" && tar xf "$WORK/src/qalc.tar.gz" -C "$Q" --strip-components=1
+    # ac_cv_prog_cc_c23: configure also looks for a host compiler and reuses emcc's -std=gnu23 on it
     (cd "$Q"
-     CPPFLAGS="-I$P/include" LDFLAGS="-L$P/lib" CFLAGS=-O2 CXXFLAGS="-O2 -fwasm-exceptions" \
+     ac_cv_prog_cc_c23=no CPPFLAGS="-I$P/include" LDFLAGS="-L$P/lib" CFLAGS=-O2 CXXFLAGS="-O2 -fwasm-exceptions" \
          emconfigure ./configure --prefix="$P" --disable-shared --enable-static --enable-compiled-definitions --disable-nls \
          --disable-textport --disable-tests --disable-insecure --without-libcurl --without-icu --without-gnuplot-call --without-readline
      emmake make -C data

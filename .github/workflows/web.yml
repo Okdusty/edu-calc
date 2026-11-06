@@ -29,12 +29,20 @@ jobs:
         with:
           version: ${{ env.EMSDK_VERSION }}
       - name: Compiled libraries
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: web/engine/.build/prefix
-          key: wasm-libs-${{ env.EMSDK_VERSION }}-${{ hashFiles('web/engine/build.sh') }}
+          key: wasm-libs-1-${{ env.EMSDK_VERSION }}-${{ github.run_id }}
+          restore-keys: wasm-libs-1-${{ env.EMSDK_VERSION }}-
       - name: Engine
         run: bash web/engine/build.sh
+      # what got built is kept even when a later step fails; the 1 in the key forces a full rebuild
+      - name: Keep compiled libraries
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: web/engine/.build/prefix
+          key: wasm-libs-1-${{ env.EMSDK_VERSION }}-${{ github.run_id }}
       - name: Engine test
         run: node web/test/engine.smoke.mjs
       - uses: actions/upload-artifact@v4
