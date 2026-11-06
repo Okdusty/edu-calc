@@ -60,6 +60,7 @@ class Engine {
     clearTimeout(this.startTimer);
     this.startTimer = setTimeout(() => this.startFailed('The calculator took too long to load.'), 45000);
     this.worker.onmessage = ({ data }) => {
+      if (data.failed) { if (!this.ready) this.startFailed(data.failed); return; }
       if (data.ready) {
         clearTimeout(this.startTimer);
         this.starts = 0;
@@ -77,7 +78,7 @@ class Engine {
       this.pump();
     };
     this.worker.onerror = (e) => {
-      if (!this.ready) { this.startFailed(e.message); return; }
+      if (!this.ready) { if (!this.retrying) this.startFailed(e.message); return; }
       // it stopped working later: its jobs fail, and a new one takes over
       if (this.running) { const job = this.running; this.running = null; job.reject(new Error('The calculator stopped; it is restarting.')); }
       clearTimeout(this.watchdog);
@@ -89,6 +90,8 @@ class Engine {
 
   /** A failed download is usually a hiccup: try again, longer each time, then say so and keep trying. */
   startFailed(reason) {
+    if (this.retrying) return;
+    this.retrying = true;
     clearTimeout(this.startTimer);
     this.worker.terminate();
     this.starts = (this.starts ?? 0) + 1;
@@ -96,7 +99,7 @@ class Engine {
       this.failure = `The calculator could not load (${reason || 'download failed'}). Trying again…`;
       this.onFailure?.(this.failure);
     }
-    setTimeout(() => this.start(), Math.min(this.starts * 1500, 15000));
+    setTimeout(() => { this.retrying = false; this.start(); }, Math.min(this.starts * 1500, 15000));
   }
 
   whenReady() { return this.ready ? Promise.resolve() : new Promise((f) => this.readyWaiters.push(f)); }

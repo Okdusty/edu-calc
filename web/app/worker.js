@@ -2,7 +2,14 @@
 import createQalc from './engine/qalc.mjs';
 import { Engine } from './engine-core.js';
 
-const engine = new Engine(await createQalc());
+let engine;
+try {
+  engine = new Engine(await createQalc({ onAbort: (what) => self.postMessage({ failed: String(what) }) }));
+} catch (e) {
+  // a failed download of the engine: the page tries again with a new worker
+  self.postMessage({ failed: e.message });
+  throw e;
+}
 self.onmessage = ({ data: { id, type, args } }) => {
   try {
     const reply = jobs[type](...args);
