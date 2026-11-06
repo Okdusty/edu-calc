@@ -698,8 +698,12 @@ try {
     const before = await page.evaluate(() => caches.keys());
     engineTrouble.newVersion = '-next';
     await page.evaluate(async () => (await navigator.serviceWorker.getRegistration()).update());
+    await untilAsync(page, async () => !!(await navigator.serviceWorker.getRegistration()).waiting, 'the new offline copy, complete');
+    // the open page keeps the version it started with
+    assert.deepEqual((await page.evaluate(() => caches.keys())).filter((k) => before.includes(k)), before);
+    await page.reload();
+    await ready();
     await untilAsync(page, async () => { const k = await caches.keys(); return k.length === 1 && k[0].endsWith('-next'); }, 'the new offline copy, the old one gone');
-    assert.notDeepEqual(await page.evaluate(() => caches.keys()), before);
     await untilAsync(page, copyReady, 'the new version in charge');
     await page.reload();
     await ready();

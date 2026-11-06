@@ -1077,6 +1077,24 @@ class App {
   }
 }
 
+// A new version takes over here, before anything runs, so a page never mixes two versions.
+try {
+  const update = (await navigator.serviceWorker?.getRegistration())?.waiting;
+  if (update) {
+    const changed = await new Promise((done) => {
+      navigator.serviceWorker.addEventListener('controllerchange', () => done(true), { once: true });
+      update.postMessage('activate');
+      setTimeout(done, 5000, false);
+    });
+    if (changed) {
+      location.reload();
+      await new Promise(() => {});
+    }
+  }
+} catch {
+  // no service worker in this browser: the app runs all the same
+}
+
 window.app = new App();
 
 // offline: the service worker keeps the whole app, and the browser is asked to keep the storage

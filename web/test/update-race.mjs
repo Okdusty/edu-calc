@@ -42,7 +42,7 @@ const settled = async () => {
 };
 
 let failed = 0;
-for (const [name, type, rounds] of [['chromium', chromium, [0, 20, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 90, 100, 150, 200, 300, 400, 600, 800, 1200, 2000, 3000, 5000]], ['firefox', firefox, [0, 100, 400, 1500]], ['webkit', webkit, [0, 100, 400, 1500]]]) {
+for (const [name, type, rounds] of [['chromium', chromium, [0, 20, ...[1, 2, 3].flatMap(() => [30, 35, 40, 45, 50, 55, 60, 65, 70]), 75, 80, 90, 100, 150, 200, 300, 400, 600, 800, 1200, 2000, 3000, 5000]], ['firefox', firefox, [0, 100, 400, 1500]], ['webkit', webkit, [0, 100, 400, 1500]]]) {
   const browser = await type.launch();
   for (const delay of rounds) {
     const site = await serve();
@@ -71,10 +71,21 @@ for (const [name, type, rounds] of [['chromium', chromium, [0, 20, 30, 35, 40, 4
       const t = Date.now();
       log.length = 0;
       await page.reload({ timeout: 25000 });
-      await page.waitForFunction(() => window.app?.engine?.ready === true, undefined, { timeout: 25000 });
-      await page.fill('.input-row input', '6 × 7');
-      await page.waitForFunction(() => document.querySelector('.preview').textContent === '= 42', undefined, { timeout: 15000 });
-      console.log(`${name} +${delay} ms: opened in ${Date.now() - t} ms  ${state}`);
+      const opens = async () => {
+        await page.waitForFunction(() => window.app?.engine?.ready === true, undefined, { timeout: 25000 });
+        await page.fill('.input-row input', '6 × 7');
+        await page.waitForFunction(() => document.querySelector('.preview').textContent === '= 42', undefined, { timeout: 15000 });
+      };
+      await opens();
+      const opened = Date.now() - t;
+      // whatever the update did by now, more openings still work and end with one copy
+      await poll(page, async () => !(await navigator.serviceWorker.getRegistration()).installing, 'the update to end', 30000);
+      await page.reload({ timeout: 25000 });
+      await opens();
+      await poll(page, async () => (await caches.keys()).length === 1, 'one offline copy', 15000);
+      await page.reload({ timeout: 25000 });
+      await opens();
+      console.log(`${name} +${delay} ms: opened in ${opened} ms  ${state}  then ${await page.evaluate(() => caches.keys())}`);
     } catch (e) {
       failed++;
       console.log(`${name} +${delay} ms: FAILED after ${Date.now() - start} ms  ${state}\n  ${e.message.split('\n')[0]}`);

@@ -21,7 +21,16 @@ async function keep(cache, file) {
 }
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => Promise.all(FILES.map((f) => keep(c, f)))).then(() => self.skipWaiting()));
+  // never half a copy: the version in charge stays until this one is complete
+  e.waitUntil(caches.open(CACHE).then((c) => Promise.all(FILES.map((f) => keep(c, f)))).catch(async (err) => {
+    await caches.delete(CACHE);
+    throw err;
+  }));
+});
+
+// A complete new version waits: it takes over when a page opening asks (main.js), never under a loading page.
+self.addEventListener('message', (e) => {
+  if (e.data === 'activate') self.skipWaiting();
 });
 
 self.addEventListener('activate', (e) => {
@@ -33,10 +42,11 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const { request } = e;
   if (request.method !== 'GET' || new URL(request.url).origin !== self.location.origin) return;
-  e.respondWith(caches.match(request, { ignoreSearch: true }).then((hit) => {
+  const mine = { ignoreSearch: true, cacheName: CACHE };
+  e.respondWith(caches.match(request, mine).then((hit) => {
     if (hit) return hit;
     // the app's address itself, also when opened with a trailing path
-    if (request.mode === 'navigate') return caches.match('./index.html').then((page) => page ?? fetch(request));
+    if (request.mode === 'navigate') return caches.match('./index.html', mine).then((page) => page ?? fetch(request));
     return fetch(request);
   }));
 });
