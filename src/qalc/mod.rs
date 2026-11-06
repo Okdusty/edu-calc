@@ -902,6 +902,65 @@ fn synced<T>(it: &Interp, expr: &str, f: impl FnOnce(&str) -> Result<T, String>)
 mod tests {
     use super::*;
 
+    /// Writes web/test/parity.json: this engine's answers, which the web build must match exactly
+    /// (web/test/parity.mjs). After a change to the shim or libqalculate:
+    /// `cargo test export_parity -- --ignored`.
+    #[test]
+    #[ignore = "writes web/test/parity.json"]
+    fn export_parity() {
+        let json = |s: &str| {
+            let mut o = String::from("\"");
+            for c in s.chars() {
+                match c {
+                    '"' => o += "\\\"",
+                    '\\' => o += "\\\\",
+                    '\n' => o += "\\n",
+                    '\t' => o += "\\t",
+                    c if (c as u32) < 0x20 => o += &format!("\\u{:04x}", c as u32),
+                    c => o.push(c),
+                }
+            }
+            o + "\""
+        };
+        let num = |v: f64| if v.is_finite() { format!("{v:e}") } else { "null".to_string() };
+        let settings = [
+            ("rad", Options::default()),
+            ("deg", Options { angle: "deg".into(), ..Default::default() }),
+            ("decimal", Options { angle: "deg".into(), fraction: "decimal".into(), ..Default::default() }),
+        ];
+        let corpus = std::fs::read_to_string("web/test/parity-corpus.txt").unwrap();
+        let mut answers = vec![];
+        for expr in corpus.lines() {
+            for (name, o) in &settings {
+                let reply = match classroom_eval(expr, o) {
+                    Ok(a) => {
+                        let vars: Vec<String> = a.free_vars.iter().map(|v| json(v)).collect();
+                        format!("\"input\":{},\"result\":{},\"approx\":{},\"freeVars\":[{}]", json(&a.input), json(&a.result), json(&a.approx), vars.join(","))
+                    }
+                    Err(e) => format!("\"error\":{}", json(&e)),
+                };
+                answers.push(format!("{{\"expr\":{},\"set\":\"{name}\",{reply}}}", json(expr)));
+            }
+        }
+        // graphs: every 100th sample, and where the curve breaks at a pole
+        let curves = ["x²", "x³ - 3x", "sin(x)", "cos(x) + 1", "tan(x)", "1/x", "ln(x)", "sqrt(x)", "e^x", "abs(x)", "floor(x)", "x!", "2x + 1", "3", "sin(x)/x", "x^(1/3)", "sin(x + 30°)", "asin(x)", "1/(x^2 - 1)"];
+        let mut samples = vec![];
+        for expr in curves {
+            for (name, o) in &settings[..2] {
+                let reply = match classroom_curve(expr, o, -20.0, 20.0) {
+                    Ok((x, y)) => {
+                        let at: Vec<String> = y.iter().step_by(100).map(|v| num(*v)).collect();
+                        format!("\"points\":{},\"xs\":{},\"ys\":[{}]", y.len(), x.iter().filter(|v| v.is_nan()).count(), at.join(","))
+                    }
+                    Err(e) => format!("\"error\":{}", json(&e)),
+                };
+                samples.push(format!("{{\"expr\":{},\"set\":\"{name}\",{reply}}}", json(expr)));
+            }
+        }
+        let text = format!("{{\"answers\":[\n{}\n],\"curves\":[\n{}\n]}}\n", answers.join(",\n"), samples.join(",\n"));
+        std::fs::write("web/test/parity.json", text).unwrap();
+    }
+
     #[test]
     fn table_columns_reach_the_calculator() {
         let o = Options::default();

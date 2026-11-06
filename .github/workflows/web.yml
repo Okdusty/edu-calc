@@ -45,6 +45,8 @@ jobs:
           key: wasm-libs-1-${{ env.EMSDK_VERSION }}-${{ github.run_id }}
       - name: Engine test
         run: node web/test/engine.smoke.mjs
+      - name: Same answers as the desktop engine
+        run: node web/test/parity.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: engine
