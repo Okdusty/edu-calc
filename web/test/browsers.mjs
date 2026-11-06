@@ -10,19 +10,26 @@ const dist = new URL('../dist/', import.meta.url).pathname;
 const shots = new URL('../shots/', import.meta.url).pathname;
 mkdirSync(shots, { recursive: true });
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.wasm': 'application/wasm', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
-const server = process.env.SITE_URL ? null : createServer((req, res) => {
-  const path = decodeURIComponent(new URL(req.url, 'http://x').pathname);
-  if (!path.startsWith('/edu-calc/')) { res.writeHead(404).end(); return; }
-  let file = join(dist, path.slice('/edu-calc/'.length));
-  if (path.endsWith('/')) file = join(file, 'index.html');
-  try { statSync(file); } catch { res.writeHead(404).end(); return; }
-  res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream' }).end(readFileSync(file));
-});
-if (server) await new Promise((r) => server.listen(0, '127.0.0.1', r));
-const url = process.env.SITE_URL ?? `http://localhost:${server.address().port}/edu-calc/`;
+/** The site on a port of its own; stop() is the network really going away, whatever the browser. */
+async function serve() {
+  const sockets = new Set();
+  const server = createServer((req, res) => {
+    const path = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+    if (!path.startsWith('/edu-calc/')) { res.writeHead(404).end(); return; }
+    let file = join(dist, path.slice('/edu-calc/'.length));
+    if (path.endsWith('/')) file = join(file, 'index.html');
+    try { statSync(file); } catch { res.writeHead(404).end(); return; }
+    res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream' }).end(readFileSync(file));
+  });
+  server.on('connection', (c) => { sockets.add(c); c.on('close', () => sockets.delete(c)); });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const stop = () => new Promise((r) => { server.close(r); for (const c of sockets) c.destroy(); });
+  return { url: `http://localhost:${server.address().port}/edu-calc/`, stop };
+}
 
 let failed = false;
 for (const [name, type] of [['firefox', firefox], ['webkit', webkit]]) {
+  const site = process.env.SITE_URL ? { url: process.env.SITE_URL, stop: () => {} } : await serve();
   const browser = await type.launch();
   const context = await browser.newContext({ viewport: { width: 1366, height: 860 } });
   const page = await context.newPage();
@@ -38,7 +45,7 @@ for (const [name, type] of [['firefox', firefox], ['webkit', webkit]]) {
   const check = (s) => { step = s; console.log(`${name}: ${s}`); };
   try {
     check('starts');
-    await page.goto(url);
+    await page.goto(site.url);
     await ready();
 
     check('calculator');
@@ -121,7 +128,9 @@ for (const [name, type] of [['firefox', firefox], ['webkit', webkit]]) {
     await until(async () => (await caches.keys()).some((k) => k.startsWith('educalc-')));
     await until(() => navigator.serviceWorker.controller !== null);
     await page.waitForTimeout(500);
-    await context.setOffline(true);
+    await site.stop();
+    // WebKit's simulated offline fails a reload before its service worker gets to answer
+    if (name !== 'webkit' || process.env.SITE_URL) await context.setOffline(true);
     await page.reload();
     await ready();
     await page.fill(entry, 'sqrt(144) + mean(X)');
@@ -143,7 +152,7 @@ for (const [name, type] of [['firefox', firefox], ['webkit', webkit]]) {
     await page.screenshot({ path: join(shots, `${name}-failure.png`) }).catch(() => {});
   } finally {
     await browser.close();
+    await site.stop();
   }
 }
-server?.close();
 process.exitCode = failed ? 1 : 0;
