@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import createQalc from '../app/engine/qalc.mjs';
 import { Engine, DEFAULT_OPTIONS } from '../app/engine-core.js';
 import * as XLSX from '../app/vendor/xlsx.mjs';
-import { parseText, sheetRows, trimCells } from '../app/logic.js';
+import { parseText, readBook, sheetRows, trimCells } from '../app/logic.js';
 
 const reference = JSON.parse(readFileSync(new URL('parity.json', import.meta.url)));
 const settings = {
@@ -60,7 +60,7 @@ for (const [text, points, error] of model.graphRows) {
 const root = new URL('../../', import.meta.url);
 for (const { file, sheets } of model.books) {
   const bytes = readFileSync(new URL(file, root));
-  const wb = file.endsWith('.csv') ? null : XLSX.read(bytes, { dense: false, cellDates: false });
+  const wb = file.endsWith('.csv') ? null : readBook(XLSX, new Uint8Array(bytes));
   if (wb && JSON.stringify(wb.SheetNames) !== JSON.stringify(sheets.map((s) => s[0]))) differences.push(['sheet names', sheets.map((s) => s[0]), wb.SheetNames]);
   for (const [name, want] of sheets) {
     const got = wb ? sheetRows(XLSX, wb.Sheets[name]) : trimCells(parseText(bytes.toString('utf8')));

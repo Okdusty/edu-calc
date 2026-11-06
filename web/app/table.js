@@ -1,7 +1,7 @@
 // The spreadsheet: row 0 holds the column names (echoed in the sticky titles), the rows below the
 // numbers. Enter / Down, Shift+Enter / Up, Tab, Shift+Tab move between cells, moving past the last
 // row adds one. Only the rows in view exist as widgets, so thousands are fine (src/gui/data.rs).
-import { cells, parseText, sheetRows, splitHeader, toNum, trimCells, writeCells } from './logic.js';
+import { cells, parseText, readBook, sheetRows, splitHeader, toNum, trimCells, writeCells } from './logic.js';
 
 const ROW_H = 40;
 const TEXT_TIP = 'Enter a finite number. This cell is excluded from charts and statistics.';
@@ -380,7 +380,7 @@ export class Table {
     try {
       if (BOOK.test(file.name)) {
         const XLSX = await this.ui.loadBook();
-        this.book = { XLSX, wb: XLSX.read(await file.arrayBuffer(), { dense: false, cellDates: false }) };
+        this.book = { XLSX, wb: readBook(XLSX, new Uint8Array(await file.arrayBuffer())) };
         this.source = { name: file.name, sheet: this.book.wb.SheetNames[0] };
         this.sheets.innerHTML = '';
         for (const n of this.book.wb.SheetNames) this.sheets.append(new Option(n, n));

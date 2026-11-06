@@ -1143,6 +1143,19 @@ export function trimCells(g) {
   }).filter((r) => r.length > 0);
 }
 
+/** A workbook from its bytes. The library insists on styles.xml in an .ods, where it is optional. */
+export function readBook(XLSX, bytes) {
+  const read = (data) => XLSX.read(data, { type: 'array', dense: false, cellDates: false });
+  try {
+    return read(bytes);
+  } catch (e) {
+    if (!String(e.message).includes('styles.xml')) throw e;
+  }
+  const zip = XLSX.CFB.read(bytes, { type: 'array' });
+  XLSX.CFB.utils.cfb_add(zip, '/styles.xml', new TextEncoder().encode('<?xml version="1.0"?><office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"/>'));
+  return read(new Uint8Array(XLSX.CFB.write(zip, { fileType: 'zip', type: 'array' })));
+}
+
 /** A worksheet as the Data tab reads it (`XLSX`: the spreadsheet library). */
 export function sheetRows(XLSX, sheet) {
   const rows = [];
