@@ -319,6 +319,8 @@ try {
   assert.equal(dl.suggestedFilename(), 'data.csv');
   assert.equal(readFileSync(await dl.path(), 'utf8'), 'A\n9\n');
   await page.evaluate(() => { window.app.table.setGrid([['X', 'Y'], ['1', '2'], ['2', '4'], ['3', '5'], ['4', '9']], [1, 0]); window.app.table.changed(); });
+  await until(() => document.querySelectorAll('.selectors select')[2].options.length === 2);
+  await ySel.selectOption({ label: 'Y' }); // a one-column sheet had moved it to the only column
   await statsHas('r = 0.9648');
 
   check('chart export: PNG and SVG');
