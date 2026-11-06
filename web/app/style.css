@@ -111,7 +111,7 @@ dialog .buttons button { min-width: 84px; min-height: 40px; }
 .history-input { color: var(--dim); }
 .history-answer { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .history-result { font-size: 1.6em; font-weight: 700; }
-.preview { font-size: 1.3em; overflow-wrap: anywhere; flex: none; }
+.preview { font-size: 1.3em; overflow-wrap: anywhere; flex: none; white-space: pre-wrap; }
 .message, .table-note { overflow-wrap: anywhere; flex: none; }
 .table-bar { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; flex: none; }
 .table-bar .caption-label { color: var(--dim); padding: 0 8px; }

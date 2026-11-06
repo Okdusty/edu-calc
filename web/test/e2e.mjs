@@ -427,7 +427,7 @@ try {
   assert.equal(await page.evaluate(() => navigator.onLine), false);
   await tab('Calculator');
   await page.fill('.input-row input', 'sqrt(144) + mean(X)');
-  await previewIs('= 14.5');
+  await previewIs('= 29/2  ≈ 14.5');
   await key('Enter');
   await until(() => document.querySelectorAll('.history-card').length === 2);
   await tab('Graph');
