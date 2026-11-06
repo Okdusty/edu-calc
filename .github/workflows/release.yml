@@ -1,4 +1,4 @@
-# Linux AppImage and Windows zip. A pushed v* tag also publishes them as a pre-release;
+# Linux AppImage, Windows installer and zip. A pushed v* tag also publishes them as a pre-release;
 # "Run workflow" (workflow_dispatch) only builds them, as artifacts of the run.
 name: release
 
@@ -12,6 +12,7 @@ permissions:
 
 env:
   QALC_VERSION: "5.12.0"
+  WIX_VERSION: "5.0.2"
   VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'snapshot' }}
 
 jobs:
@@ -109,10 +110,78 @@ jobs:
           & $exe demo/models.m -o smoke.png
           if ($LASTEXITCODE -or -not (Test-Path smoke.png)) { exit 1 }
 
+      - name: Installer
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version $env:WIX_VERSION
+          $env:PATH += ";$env:USERPROFILE\.dotnet\tools"
+          wix extension add --global "WixToolset.UI.wixext/$env:WIX_VERSION"
+          $name = (Get-ChildItem build -Directory -Filter 'qcalcp-*-win64').Name
+          $version = (Get-Content build/msi-version).Trim()
+          function Msi($v, $out) {
+            wix build packaging/qcalcp.wxs -arch x64 -ext WixToolset.UI.wixext -d "Version=$v" -d "Root=$PWD" -bindpath "app=$PWD\build\$name" -o $out
+            if ($LASTEXITCODE) { exit 1 }
+          }
+          Msi $version "build/$name.msi"
+          # the same app one version up, for the upgrade test
+          $p = $version.Split('.')
+          Msi "$($p[0]).$($p[1]).$($p[2]).$([int]$p[3] + 1)" "$env:RUNNER_TEMP\next.msi"
+
+      - name: Install, upgrade and uninstall test
+        shell: pwsh
+        run: |
+          $msi = (Get-ChildItem build -Filter '*.msi').FullName
+          function Msiexec($action, $file) {
+            $log = "$env:RUNNER_TEMP\msi.log"
+            $code = (Start-Process msiexec -ArgumentList "$action `"$file`" /qn /l*v `"$log`"" -Wait -PassThru).ExitCode
+            if ($code) { Get-Content $log -Tail 60; throw "msiexec $action: exit code $code" }
+          }
+          function Entries { @(Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object DisplayName -eq 'EduCalculator') }
+          $dir = "$env:ProgramFiles\EduCalculator"
+          $exe = "$dir\bin\EduCalc.exe"
+          $menu = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\EduCalculator"
+          $env:XDG_CONFIG_HOME = "$env:RUNNER_TEMP\cfg-msi"
+
+          Msiexec '/i' $msi
+          if ((Entries).Count -ne 1) { throw 'not listed once in Apps' }
+          $shell = New-Object -ComObject WScript.Shell
+          $app = $shell.CreateShortcut("$menu\EduCalculator.lnk")
+          if ($app.TargetPath -ne $exe) { throw "Start menu shortcut opens '$($app.TargetPath)'" }
+          if (-not $app.WorkingDirectory) { throw 'Start menu shortcut has no working folder' }
+          $remove = $shell.CreateShortcut("$menu\Uninstall EduCalculator.lnk")
+          if ($remove.TargetPath -notmatch 'msiexec\.exe$' -or $remove.Arguments -notmatch '^/x \{') { throw "uninstall shortcut is '$($remove.TargetPath) $($remove.Arguments)'" }
+          # only Windows itself on PATH: every DLL has to come from the installed folder
+          $path = $env:PATH
+          $env:PATH = "C:\Windows\System32;C:\Windows"
+          $out = & $exe "5 km to mi" | Out-String; $out
+          if ($LASTEXITCODE -or $out -notmatch "3.106855961 mi") { throw 'installed app: calculation failed' }
+          $out = & $exe -e "disp(pyeval('2**10'))" | Out-String; $out
+          if ($LASTEXITCODE -or $out -notmatch "1024") { throw 'installed app: Python failed' }
+          # the window must still be up after 15 s
+          $env:GSK_RENDERER = 'cairo'
+          $gui = Start-Process $exe -PassThru
+          Start-Sleep 15
+          if ($gui.HasExited) { throw "installed app: GUI exited with $($gui.ExitCode)" }
+          Stop-Process $gui
+          Wait-Process -Id $gui.Id -Timeout 10 -ErrorAction SilentlyContinue
+          $env:PATH = $path
+
+          $before = (Entries)[0].DisplayVersion
+          Msiexec '/i' "$env:RUNNER_TEMP\next.msi"
+          $now = Entries
+          if ($now.Count -ne 1) { throw "upgrade left $($now.Count) entries in Apps" }
+          if ($now[0].DisplayVersion -eq $before) { throw "upgrade kept version $before" }
+
+          Msiexec '/x' "$env:RUNNER_TEMP\next.msi"
+          if ((Entries).Count) { throw 'still listed in Apps after uninstall' }
+          foreach ($p in $dir, $menu) { if (Test-Path $p) { Get-ChildItem $p -Recurse | Select-Object -First 20 | Out-String; throw "$p left behind" } }
+
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: build/qcalcp-*-win64.zip
+          path: |
+            build/qcalcp-*-win64.msi
+            build/qcalcp-*-win64.zip
 
   release:
     if: github.ref_type == 'tag'
@@ -129,4 +198,4 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --prerelease \
             --title "EduCalculator $GITHUB_REF_NAME (snapshot beta)" \
-            --notes "Snapshot beta. Linux: qcalcp-*-x86_64.AppImage (glibc 2.39+). Windows 10/11: unzip qcalcp-*-win64.zip and run bin\\EduCalc.exe. See the README for what's in it and the known gaps."
+            --notes "Snapshot beta. Linux: qcalcp-*-x86_64.AppImage (glibc 2.39+). Windows 10/11: run qcalcp-*-win64.msi (needs administrator rights; it isn't code-signed yet, so if SmartScreen warns, choose More info > Run anyway) and uninstall from Settings > Apps or the Start menu. Without installing: unzip qcalcp-*-win64.zip and run bin\\EduCalc.exe. See the README for what's in it and the known gaps."

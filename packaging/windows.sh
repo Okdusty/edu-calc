@@ -37,3 +37,13 @@ done
 
 (cd build && zip -qr "$NAME.zip" "$NAME")
 ls -l "build/$NAME.zip"
+
+# for the installer (qcalcp.wxs). Windows Installer versions are numbers: 0.1.0-beta.3 -> 0.1.0.3
+sed -nE '0,/^version = /s/^version = "([0-9]+\.[0-9]+\.[0-9]+)(-[a-z]+\.([0-9]+))?"/\1.\3/p' Cargo.toml | sed 's/\.$/.0/' > build/msi-version
+grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' build/msi-version || { echo "can't make an installer version from Cargo.toml" >&2; exit 1; }
+# its license page takes RTF
+{
+    printf '{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Consolas;}}\\f0\\fs16\n'
+    tr -d '\f\r' < LICENSE | sed -e 's/\\/\\\\/g' -e 's/{/\\{/g' -e 's/}/\\}/g' -e 's/$/\\par/'
+    printf '}\n'
+} > build/LICENSE.rtf

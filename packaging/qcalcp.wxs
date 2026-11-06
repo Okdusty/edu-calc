@@ -1,0 +1,38 @@
+<!-- Windows installer, built by .github/workflows/release.yml with WiX 5 from what packaging/windows.sh
+     collects. Passed in: Version (x.y.z.n, see windows.sh), Root (repository, absolute), and the bind
+     path "app" (the unpacked zip's folder). Uninstalls through Settings > Apps or the Start menu.
+     Never change UpgradeCode: it is how a new version finds and replaces the old one. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="EduCalculator" Manufacturer="Okdusty" Version="$(var.Version)" Scope="perMachine" UpgradeCode="09438D58-8432-4076-AE0F-C90A1ECBBBBF">
+    <!-- betas differ only in the 4th field, which Windows Installer ignores when comparing -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of EduCalculator is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="qcalcp.ico" SourceFile="$(var.Root)\packaging\qcalcp.ico" />
+    <Property Id="ARPPRODUCTICON" Value="qcalcp.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/Okdusty/edu-calc" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.Root)\build\LICENSE.rtf" />
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="EduCalculator" />
+    </StandardDirectory>
+    <StandardDirectory Id="PersonalFolder" />
+    <StandardDirectory Id="System64Folder" />
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="MenuFolder" Name="EduCalculator">
+        <Component Id="Shortcuts">
+          <Shortcut Id="AppShortcut" Name="EduCalculator" Target="[INSTALLFOLDER]bin\EduCalc.exe" WorkingDirectory="PersonalFolder" Icon="qcalcp.ico" />
+          <Shortcut Id="UninstallShortcut" Name="Uninstall EduCalculator" Target="[System64Folder]msiexec.exe" Arguments="/x [ProductCode]" />
+          <RemoveFolder Id="RemoveMenuFolder" On="uninstall" />
+          <RegistryValue Root="HKMU" Key="Software\EduCalculator" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main">
+      <Files Directory="INSTALLFOLDER" Include="!(bindpath.app)\**" />
+      <ComponentRef Id="Shortcuts" />
+    </Feature>
+  </Package>
+</Wix>

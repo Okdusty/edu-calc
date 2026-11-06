@@ -5,7 +5,7 @@ The executable is `EduCalc.exe` on Windows and `EduCalc` on Linux. Configuration
 
 A calculator, Octave-style interpreter and plotter in one program, with a GTK 4 window, a terminal UI and a command line. Calculator input goes through [libqalculate](https://github.com/Qalculate/libqalculate) (exact fractions, units, symbolic calculus, number bases); scripts run in a built-in interpreter for a large subset of Octave/MATLAB. Answers and plots convert between the two in both directions.
 
-**Status: beta.** Snapshot builds for Linux (AppImage) and Windows (64-bit zip) are on the releases page.
+**Status: beta.** Snapshot builds for Linux (AppImage) and Windows (64-bit installer or zip) are on the releases page.
 
 ![Advanced calculator: answers with units and exact forms, autocomplete, and a cubic with its roots, extrema and point of symmetry marked](demo/gui-calc.png)
 
@@ -18,8 +18,9 @@ functions by topic, each with its syntax and an example; tap one to insert it), 
 Menu → Appearance picks Light (the default), Dark or System Default (follows the desktop), for
 both modes. The keypad's side column picks a page
 of function keys: **Basic** (powers, roots, fractions, sin/cos/tan, ln, log, n!), **f(x)**
-(cube and n-th roots, eˣ, 10ˣ, log base a, nCr, nPr, gcd, lcm, mod, round, floor, ceil) or
-**Trig** (inverse, reciprocal and hyperbolic functions, degrees). Angles start in degrees;
+(cube and n-th roots, eˣ, 10ˣ, log base a, nCr, nPr, gcd, lcm, mod, round, floor, ceil),
+**Trig** (inverse, reciprocal and hyperbolic functions, degrees) or **Stats** (mean, median, mode,
+sd, variance, quartiles, r, slope and more). Angles start in degrees;
 **DEG/RAD** changes the unit for calculations and graphs. The number pad also holds the
 cursor keys, **Ans** and **Next □**. Drag the bar above the keypad to change its height;
 double-click it to reset. The focused bar also takes Up/Down and Home.
@@ -27,7 +28,11 @@ double-click it to reset. The focused bar also takes Up/Down and Home.
 - **Calculator:** arithmetic, fractions, powers, roots and trigonometry, a live answer preview,
   and history you can tap to reuse. **Decimal** switches answers from fractions to decimals.
   **Graph** sends a function of `x` to the Graph tab. **Next □** moves through a function
-  key's arguments.
+  key's arguments. The Data table's columns are variables here: `mean(X)`, `quartile(Y, 1)`,
+  `pearson(X, Y)`, `slope(X, Y)`, `intercept(X, Y)`. A strip above the entry lists the columns
+  and has **Correlation r**, **Slope** and **Intercept** buttons for the charted pair. A column
+  needs a one-word name that isn't a unit or constant (the strip says when one doesn't), and
+  blank cells are skipped per column.
 - **Graph:** one row per function, such as `y = x²`, `2x + 1` or `sin(x)`, with a checkbox to
   show or hide it and a delete button. Curves update while you type; a row that can't be graphed
   says why under it (a missing `)`, a dangling `+`, an unknown name ...). Drag to pan (a flick keeps
@@ -38,12 +43,16 @@ double-click it to reset. The focused bar also takes Up/Down and Home.
   inequalities, sliders or 3-D graphs.
 - **Data:** type or paste a numeric table, or import CSV/TSV/text/XLSX/XLS/ODS. The table's
   toolbar has import, export (CSV/TSV) and paste; under it, **Rows** and **Columns** buttons
-  (a green + inserts below / right of the selected cell, a red − deletes its row / column). Pick Scatter, Line, Bar or Histogram and the x and y columns
-  (x can be the row number). Below the chart: n, mean, median, sample standard deviation, min
-  and max of the y column, and for X/Y charts the least-squares line `y = mx + b` over complete
-  numeric pairs (at least two, with distinct x). Missing and non-numeric cells are skipped and
-  counted; line charts keep gaps. Decimal commas are accepted. The keypad shows only the number
-  pad here. **Menu → Export chart** saves the chart as PNG or SVG. The table is shared with
+  (a green + inserts below / right of the selected cell, a red − deletes its row / column). Pick
+  Scatter, Line, Bar or Histogram and the x and y columns (x can be the row number). **Fit** draws
+  a linear, quadratic, exponential, power or logarithmic curve through the points. Below the chart:
+  n, mean, median, sample standard deviation, min and max of the y column, and for X/Y charts the
+  fit's equation with r² and Pearson's r, over complete numeric pairs. **More statistics** adds the
+  sum, mode, quartiles, IQR, range, sample and population spread, standard error, Spearman's ρ and
+  covariance. These agree with the calculator's functions (quartiles interpolate linearly, like
+  Excel's QUARTILE.INC). Missing and non-numeric cells are skipped and counted; line charts keep
+  gaps. Decimal commas are accepted. The keypad shows only the number pad here, where **Ans** puts
+  the calculator's last answer into the selected cell. **Menu → Export chart** saves the chart as PNG or SVG. The table is shared with
   Advanced: switching to Advanced puts it in the workspace as `data` (each named column also
   as its own variable, such as `X` and `Y`), and when Octave changes `data`, the table shows
   the new values on your way back. Advanced's Data Editor opens on `data` too.
@@ -89,7 +98,7 @@ Each picture is the output of a script in [demo/](demo/); run them from the repo
 
 **Linux**: download `qcalcp-*-x86_64.AppImage`, `chmod +x` it and run it. It bundles GTK 4, libqalculate and Python, and needs glibc 2.39 or newer (Ubuntu 24.04, Fedora 40, Debian 13 and later).
 
-**Windows 10/11 (64-bit)**: unzip `qcalcp-*-win64.zip` and run `bin\EduCalc.exe`. Started from Explorer it opens the window; from a terminal it also takes the command-line arguments below.
+**Windows 10/11 (64-bit)**: run `qcalcp-*-win64.msi` (needs administrator rights; it isn't code-signed yet, so if SmartScreen warns, choose **More info → Run anyway**). It adds EduCalculator to the Start menu, and a newer installer replaces the older version. Uninstall from **Settings → Apps** or the Start menu's **Uninstall EduCalculator**; your settings in `%LOCALAPPDATA%\qcalcp\` stay. Schools can deploy it silently with `msiexec /i qcalcp-*-win64.msi /qn`. Without installing or administrator rights: unzip `qcalcp-*-win64.zip` and run `bin\EduCalc.exe`. Started from Explorer it opens the window; from a terminal it also takes the command-line arguments below.
 
 **From source** you need Rust (edition 2024; developed with 1.99), a C++17 compiler, pkg-config, GTK 4.12 or newer, libqalculate 5 (developed against 5.12) and Python 3 with its development files.
 
@@ -154,7 +163,7 @@ Run `cargo test --locked -- --test-threads=1` and `cargo build --locked`. On Win
 libqalculate's definitions must be beside the executable: copy the contents of
 `$MINGW_PREFIX/share/qalculate/` into `target/debug/deps/definitions/` for tests and
 `target/debug/definitions/` for the development app. Keep the UCRT64 bin directory on PATH.
-The release workflow builds and smoke-tests packages on both Linux and Windows.
+The release workflow builds and smoke-tests packages on both Linux and Windows, including installing, upgrading and uninstalling the Windows installer.
 With the MSYS2 libqalculate 5.13.1 package, the existing `qalc::tests::programming`
 test fails on `bitrot(1, 1)` (an invalid bit-width bound); this also occurs on the
 unchanged code before Simple mode.
