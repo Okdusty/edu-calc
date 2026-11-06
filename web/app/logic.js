@@ -516,8 +516,8 @@ export function dataChart(grid, chart, xcol, ycol) {
     skipped = rows.length - values.length;
     xlabel = ylabel;
     ylabel = 'Frequency';
-    const lo = values.length ? Math.min(...values) : 0;
-    const hi = values.length ? Math.max(...values) : 1;
+    const lo = values.length ? values.reduce((a, b) => Math.min(a, b)) : 0;
+    const hi = values.length ? values.reduce((a, b) => Math.max(a, b)) : 1;
     const bins = Math.min(40, Math.max(1, Math.ceil(Math.sqrt(values.length))));
     const width = hi > lo ? (hi - lo) / bins : 1;
     const start = hi > lo ? lo : lo - 0.5;
@@ -584,7 +584,8 @@ export function breakJumps(xs, ys) {
   const y = [];
   for (let k = 0; k < xs.length; k++) {
     if (k > 0 && lim > 0 && d[k - 1] > lim) {
-      const near = Math.max(k >= 2 ? d[k - 2] ?? 0 : 0, d[k] ?? 0);
+      // NaN (beside a pole) counts as 0, as in Rust's f64::max; Math.max would give NaN
+      const near = Math.max(k >= 2 ? d[k - 2] || 0 : 0, d[k] || 0);
       if (ys[k] * ys[k - 1] < 0 || d[k - 1] > 3 * near) { x.push(NaN); y.push(NaN); }
     }
     x.push(xs[k]);

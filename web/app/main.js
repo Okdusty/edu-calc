@@ -926,8 +926,8 @@ class App {
     axes.ylabel = c.ylabel;
     axes.series = [c.series];
     if (fitted) {
-      const lo = Math.min(...points.map((p) => p[0]));
-      const hi = Math.max(...points.map((p) => p[0]));
+      const lo = points.reduce((m, p) => Math.min(m, p[0]), Infinity);
+      const hi = points.reduce((m, p) => Math.max(m, p[0]), -Infinity);
       const xs = Array.from({ length: 201 }, (_, i) => lo + ((hi - lo) * i) / 200);
       axes.series.push({ kind: 'line', x: xs, y: xs.map((v) => L.fitAt(fitted, v)), color: [205, 66, 64], width: 2.5 });
     }

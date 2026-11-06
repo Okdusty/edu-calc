@@ -96,7 +96,7 @@ export class Table {
   setGrid(grid, at, focus = true) {
     const g = grid.map((r) => [...r]);
     while (g.length < 2) g.push([]);
-    const w = Math.max(1, ...g.map((r) => r.length));
+    const w = g.reduce((m, r) => Math.max(m, r.length), 1);
     for (const r of g) while (r.length < w) r.push('');
     if (w !== this.cols) this.widths = [];
     this.cols = w;

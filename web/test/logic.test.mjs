@@ -248,6 +248,18 @@ test('key points: sine and cubic', () => {
   eq(of((x) => Math.cos(x - 1) + 0.3 * (x - 1) ** 2, -3, 6, 900).symmetry, { kind: 'axis', h: 1 });
 });
 
+test('curves break at poles', () => {
+  // NaN beside the pole, as the engine samples them: the jump around it still breaks the line
+  const xs = linspace(-20, 20, 2001);
+  for (const [f, breaks] of [[(x) => (x === 0 ? NaN : 1 / x), 2], [(x) => (x <= 0 ? NaN : Math.log(x)), 1], [(x) => (x * x === 1 ? NaN : 1 / (x * x - 1)), 4]]) {
+    const [bx, by] = L.breakJumps(xs, xs.map(f));
+    eq(bx.filter(Number.isNaN).length, breaks, String(f));
+    eq(bx.length, by.length);
+  }
+  const huge = Array.from({ length: 300000 }, (_, i) => [String(i), String(i % 7)]);
+  eq(L.dataChart([['a', 'b'], ...huge], 3, null, 1).stats.count, 300000, 'a very large table is fine');
+});
+
 test('key points: refuses what it should', () => {
   eq(L.analyze([1, 2, 3], [1, 2, 1]), null);
   eq(L.analyze([0, 1, 2, 1, 0, 3], [0, 1, 0, 1, 0, 1]), null);
