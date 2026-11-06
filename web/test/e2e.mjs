@@ -26,7 +26,8 @@ const context = await browser.newContext({ viewport: { width: 1366, height: 860 
 const page = await context.newPage();
 const problems = [];
 page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
-page.on('console', (m) => { if (m.type() === 'error') problems.push(`console: ${m.text()}`); });
+// the live server's own hiccups are for the app to survive, not failures of the app
+page.on('console', (m) => { if (m.type() === 'error' && !(process.env.SITE_URL && m.text().startsWith('Failed to load resource'))) problems.push(`console: ${m.text()}`); });
 page.on('dialog', (d) => d.dismiss());
 
 let step = 'start';
@@ -498,6 +499,32 @@ try {
   await tab('Graph');
   await page.waitForTimeout(250);
   await shot('13-board-graph');
+
+  check('the server hiccups: the engine and the offline copy still arrive');
+  const flaky = await browser.newContext({ viewport: { width: 1366, height: 860 } });
+  const f = await flaky.newPage();
+  let hits = 0;
+  await flaky.route('**/engine/qalc.wasm', (r) => (++hits <= 2 ? r.fulfill({ status: 503, body: 'busy' }) : r.continue()));
+  await f.goto(url);
+  await f.waitForFunction(() => window.app?.engine?.ready === true, undefined, { timeout: 60000 });
+  await f.fill('.input-row input', '2 + 2');
+  await f.waitForFunction(() => document.querySelector('.preview').textContent === '= 4', undefined, { timeout: 30000 });
+  assert.ok(hits >= 3, `the download was tried again (${hits} times)`);
+  await f.evaluate(() => navigator.serviceWorker.ready);
+  await f.waitForFunction(async () => {
+    const names = await caches.keys();
+    return names.length > 0 && (await (await caches.open(names[0])).keys()).some((r) => r.url.endsWith('engine/qalc.wasm'));
+  }, undefined, { timeout: 60000 });
+  await flaky.close();
+
+  const down = await browser.newContext({ viewport: { width: 1366, height: 860 } });
+  const g = await down.newPage();
+  await down.route('**/engine/qalc.wasm', (r) => r.fulfill({ status: 503, body: 'busy' }));
+  await g.goto(url);
+  await g.waitForFunction(() => document.querySelector('.message').textContent.includes('could not load'), undefined, { timeout: 60000 });
+  await down.unroute('**/engine/qalc.wasm');
+  await g.waitForFunction(() => window.app?.engine?.ready === true && document.querySelector('.message').textContent === '', undefined, { timeout: 60000 });
+  await down.close();
 
   check('touch: tap, flick, pinch and double-tap with real fingers');
   const touchContext = await browser.newContext({ viewport: { width: 1366, height: 860 }, hasTouch: true });

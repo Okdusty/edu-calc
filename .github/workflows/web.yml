@@ -103,7 +103,7 @@ jobs:
         working-directory: web
         env:
           SITE_URL: ${{ needs.deploy.outputs.url }}
-        run: sleep 30 && node test/e2e.mjs
+        run: sleep 60 && node test/e2e.mjs
       - name: Screenshots
         if: always()
         uses: actions/upload-artifact@v4

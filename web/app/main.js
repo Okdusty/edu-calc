@@ -56,8 +56,19 @@ class Engine {
   start() {
     this.ready = false;
     this.worker = new Worker('worker.js', { type: 'module' });
+    // a download that hangs counts as failed
+    clearTimeout(this.startTimer);
+    this.startTimer = setTimeout(() => this.startFailed('The calculator took too long to load.'), 45000);
     this.worker.onmessage = ({ data }) => {
-      if (data.ready) { this.ready = true; this.readyWaiters.splice(0).forEach((f) => f()); this.pump(); return; }
+      if (data.ready) {
+        clearTimeout(this.startTimer);
+        this.starts = 0;
+        this.ready = true;
+        this.failure = null;
+        this.readyWaiters.splice(0).forEach((f) => f());
+        this.pump();
+        return;
+      }
       const job = this.running;
       if (!job || job.id !== data.id) return;
       clearTimeout(this.watchdog);
@@ -66,10 +77,26 @@ class Engine {
       this.pump();
     };
     this.worker.onerror = (e) => {
-      this.failure = e.message || 'The calculator could not start.';
-      this.readyWaiters.splice(0).forEach((f) => f());
-      if (this.running) { const job = this.running; this.running = null; job.reject(new Error(this.failure)); }
+      if (!this.ready) { this.startFailed(e.message); return; }
+      // it stopped working later: its jobs fail, and a new one takes over
+      if (this.running) { const job = this.running; this.running = null; job.reject(new Error('The calculator stopped; it is restarting.')); }
+      clearTimeout(this.watchdog);
+      this.worker.terminate();
+      this.start();
+      this.onRestart();
     };
+  }
+
+  /** A failed download is usually a hiccup: try again, longer each time, then say so and keep trying. */
+  startFailed(reason) {
+    clearTimeout(this.startTimer);
+    this.worker.terminate();
+    this.starts = (this.starts ?? 0) + 1;
+    if (this.starts >= 3) {
+      this.failure = `The calculator could not load (${reason || 'download failed'}). Trying again…`;
+      this.onFailure?.(this.failure);
+    }
+    setTimeout(() => this.start(), Math.min(this.starts * 1500, 15000));
   }
 
   whenReady() { return this.ready ? Promise.resolve() : new Promise((f) => this.readyWaiters.push(f)); }
@@ -189,8 +216,9 @@ class App {
     else this.addGraph('');
     this.select(TABS.includes(store.get('tab', '')) ? store.get('tab', '') : 'Calculator');
     this.refreshData();
+    this.engine.onFailure = (text) => { this.message.textContent = text; };
     this.engine.whenReady().then(() => {
-      if (this.engine.failure) this.message.textContent = this.engine.failure;
+      this.message.textContent = '';
       this.setLoading(false);
       this.queueGraph(true);
     });
@@ -957,6 +985,9 @@ window.app = new App();
 
 // offline: the service worker keeps the whole app, and the browser is asked to keep the storage
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  // back online after the offline copy couldn't be made: try again
+  const register = () => navigator.serviceWorker.register('sw.js').catch(() => {});
+  register();
+  window.addEventListener('online', register);
   navigator.storage?.persist?.().catch(() => {});
 }

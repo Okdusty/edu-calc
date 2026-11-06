@@ -4,8 +4,24 @@ const VERSION = '__VERSION__';
 const FILES = __FILES__;
 const CACHE = `educalc-${VERSION}`;
 
+// fresh from the server, not the browser's HTTP cache (no mix of two versions), and a hiccup of the
+// server on one file doesn't cost the whole offline copy
+async function keep(cache, file) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const response = await fetch(new Request(file, { cache: 'reload' }));
+      if (!response.ok) throw new Error(`${file}: ${response.status}`);
+      await cache.put(file, response);
+      return;
+    } catch (e) {
+      if (attempt === 4) throw e;
+      await new Promise((r) => setTimeout(r, attempt * 2000));
+    }
+  }
+}
+
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then((c) => Promise.all(FILES.map((f) => keep(c, f)))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
