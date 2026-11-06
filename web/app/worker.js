@@ -4,7 +4,11 @@ import { Engine } from './engine-core.js';
 
 let engine;
 try {
-  engine = new Engine(await createQalc({ onAbort: (what) => self.postMessage({ failed: String(what) }) }));
+  // fetched here for its status: a server error is known at once, not when the loader gives up
+  const response = await fetch(new URL('engine/qalc.wasm', import.meta.url));
+  if (!response.ok) throw new Error(`the server answered ${response.status}`);
+  const wasmBinary = await response.arrayBuffer();
+  engine = new Engine(await createQalc({ wasmBinary, onAbort: (what) => self.postMessage({ failed: String(what) }) }));
 } catch (e) {
   // a failed download of the engine: the page tries again with a new worker
   self.postMessage({ failed: e.message });
