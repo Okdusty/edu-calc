@@ -1,0 +1,43 @@
+# The web app: the engine compiled to WebAssembly, tested, and published to GitHub Pages from master.
+name: web
+
+on:
+  push:
+    branches: [master, web-app]
+    paths: ["web/**", "src/qalc/shim.cpp", ".github/workflows/web.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EMSDK_VERSION: "4.0.10"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Logic tests
+        run: node --test web/test/logic.test.mjs
+      - name: Build tools
+        run: sudo apt-get update && sudo apt-get install -y gettext pkg-config
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EMSDK_VERSION }}
+      - name: Compiled libraries
+        uses: actions/cache@v4
+        with:
+          path: web/engine/.build/prefix
+          key: wasm-libs-${{ env.EMSDK_VERSION }}-${{ hashFiles('web/engine/build.sh') }}
+      - name: Engine
+        run: bash web/engine/build.sh
+      - name: Engine test
+        run: node web/test/engine.smoke.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine
+          path: web/app/engine/

@@ -35,6 +35,32 @@ static char *dup(const string &s) {
     return p;
 }
 
+// libqalculate's time-limited calculate() runs on a thread, and the browser has none to give (web/):
+// there it runs in place, bounded by the same control timer. False when the time ran out.
+#ifdef __EMSCRIPTEN__
+static bool calc_text(MathStructure *out, const string &text, int msecs, const EvaluationOptions &ev, MathStructure *parsed) {
+    CALCULATOR->startControl(msecs);
+    *out = CALCULATOR->calculate(text, ev, parsed);
+    bool done = !CALCULATOR->aborted();
+    CALCULATOR->stopControl();
+    return done;
+}
+static bool calc_parsed(MathStructure *m, int msecs, const EvaluationOptions &ev, const string &to) {
+    CALCULATOR->startControl(msecs);
+    *m = CALCULATOR->calculate(*m, ev, to);
+    bool done = !CALCULATOR->aborted();
+    CALCULATOR->stopControl();
+    return done;
+}
+#else
+static bool calc_text(MathStructure *out, const string &text, int msecs, const EvaluationOptions &ev, MathStructure *parsed) {
+    return CALCULATOR->calculate(out, text, msecs, ev, parsed);
+}
+static bool calc_parsed(MathStructure *m, int msecs, const EvaluationOptions &ev, const string &to) {
+    return CALCULATOR->calculate(m, msecs, ev, to);
+}
+#endif
+
 // Queued libqalculate messages, RS-separated; *err set when one is an error.
 static string messages(bool *err) {
     string s;
@@ -554,9 +580,9 @@ extern "C" char *qs_calc(const char *expr, int msecs, int mode) {
         string full = conv.empty() ? str : str + " to " + conv;
         // from the string, so qalc's "where", "to" ... work; from the reordered parse when there is one
         auto run = [&](MathStructure *out, const EvaluationOptions &ev, MathStructure *ps) {
-            if (!reordered) return CALCULATOR->calculate(out, full, left(), ev, ps);
+            if (!reordered) return calc_text(out, full, left(), ev, ps);
             *out = pre;
-            return CALCULATOR->calculate(out, left(), ev, conv);
+            return calc_parsed(out, left(), ev, conv);
         };
         MathStructure m, parsed;
         if (reordered) {
@@ -876,7 +902,7 @@ extern "C" char *qs_sample(const char *expr, const char *xvar, const char *yvar,
         init();
         CALCULATOR->clearMessages();
         MathStructure m;
-        bool done = CALCULATOR->calculate(&m, CALCULATOR->unlocalizeExpression(expr, eo.parse_options), msecs, eo);
+        bool done = calc_text(&m, CALCULATOR->unlocalizeExpression(expr, eo.parse_options), msecs, eo, nullptr);
         bool err = false;
         string msgs = messages(&err);
         if (!done || m.isAborted()) return dup("calculation timed out");
